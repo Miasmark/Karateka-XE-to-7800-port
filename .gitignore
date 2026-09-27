@@ -1,0 +1,18 @@
+# ROM and cartridge data never enters the repository
+*.a78
+*.car
+*.bin
+*.rom
+*.zip
+*.inp
+roms/
+work/
+build/
+snap/
+snaps/
+ramdump.bin
+.DS_Store
+__pycache__/
+src/
+
+mame-ini/

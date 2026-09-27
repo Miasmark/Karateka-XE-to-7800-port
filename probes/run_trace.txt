@@ -1,0 +1,2 @@
+trace /tmp/karateka_trace.txt,0000,ffff,
+go

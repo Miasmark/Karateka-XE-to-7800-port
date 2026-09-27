@@ -1,0 +1,13 @@
+
+# MAME debugger commands for extended Karateka RAM write trace
+# Run with: mame xegs -cart work/Karateka_noheader.bin -debug -debugscript debugger_trace_long.txt -video none -sound none -nothrottle -str 180
+
+# Watchpoints for key RAM areas (using page-level watching)
+wp 1000,1fff,w,1,{printf "frame=%d wp_code addr=%04X old=%02X new=%02X pc=%04X bank=%02X\n", frame, wpaddr, wpdata_old, wpdata_new, pc, [d500]; g}
+wp 6000,7fff,w,1,{printf "frame=%d wp_data addr=%04X old=%02X new=%02X pc=%04X bank=%02X\n", frame, wpaddr, wpdata_old, wpdata_new, pc, [d500]; g}
+wp 0480,04ff,w,1,{printf "frame=%d wp_common addr=%04X old=%02X new=%02X pc=%04X bank=%02X\n", frame, wpaddr, wpdata_old, wpdata_new, pc, [d500]; g}
+wp 1800,27ff,w,1,{printf "frame=%d wp_sysram addr=%04X old=%02X new=%02X pc=%04X bank=%02X\n", frame, wpaddr, wpdata_old, wpdata_new, pc, [d500]; g}
+wp d500,d500,w,1,{printf "frame=%d BANK_SELECT new=%02X pc=%04X\n", frame, wpdata_new, pc; g}
+
+# Run for 180 seconds (3 minutes of gameplay)
+go

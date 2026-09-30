@@ -86,10 +86,31 @@ def segments(car, scene):
     ]
 
 
+# The dispatch chain is scene 0's: its data bank (11) holds the routine at
+# $7FD9-$7FE6 (save X and Y, JSR $AF66, restore, JMP $780D). The other data
+# banks hold image bytes there, which the trace would read as code (from the
+# entry, and from the fixed bank's JSR $7FD9 at $BC5A, run only in scene 0);
+# relocating their "operands" damaged scene 3's fallen guard (FINDINGS "Stray
+# pixels by a fallen guard").
+CHAIN, CHAIN_END, CHAIN_BANK = 0x7FD9, 0x7FE7, 11
+
+# Bytes the static trace reads as code that are data, per scene: reached only
+# by falling through a branch that always branches, never run, nothing jumps
+# there (probes/deadfall.py lists every such place). Scene 4 $1F00: after
+# LDX #$1D / BPL at $1EFC, the finale's sprite bytes ("ORA $1403 / BRK"); its
+# "operand" relocated changed $1F02.
+NOT_CODE = {4: [(0x1F00, 0x1F04)]}
+
+
 def static_code(car, scene):
     sc = Scene(Cart(car, ""), scene)
     t = walk(sc, [(Scene.RESIDENT, pc, why) for pc, why in ENTRIES], quiet_banks=True)
-    return {pc for (_b, pc) in t.code}
+    code = {pc for (_b, pc) in t.code}
+    body = car[16:]
+    at = lambda bank: body[bank * BANK + (CHAIN - 0x6000):bank * BANK + (CHAIN_END - 0x6000)]
+    if at(sc.data_bank) != at(CHAIN_BANK):
+        code -= set(range(CHAIN, CHAIN_END))
+    return code
 
 
 def executed(paths, scene=None):
@@ -235,6 +256,8 @@ def analyse(car, scene, ex_paths, reloc_path=None):
         for source, pcs in (("executed", exe), ("static", sta)):
             for pc in sorted(p for p in pcs if start <= p < start + len(data)):
                 if pc in insn:
+                    continue
+                if source == "static" and any(lo <= pc < hi for lo, hi in NOT_CODE.get(scene, ())):
                     continue
                 d = decode(at, pc)
                 if d is None:

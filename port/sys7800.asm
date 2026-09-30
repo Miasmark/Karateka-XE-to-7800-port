@@ -47,6 +47,26 @@ SysDliExit:
     JMP DliExit
 SysStClr:
     JMP StClr
+SysRowNext:
+    JMP RowNext
+SysRowNextC:
+    JMP RowNextC
+SysRowNextE:
+    JMP RowNextE
+SysRowNextS:
+    JMP RowNextS
+SysClearBuf:
+    JMP ClearBuf
+SysCopyBuf:
+    JMP CopyBuf
+SysRowAddr:
+    JMP RowAddr
+SysRowWrap:
+    JMP RowWrap
+SysRowWrapE0:
+    JMP RowWrapE0
+SysRowWrapE2:
+    JMP RowWrapE2
 
 ; ------------------------------------------------------------------ boot
 Reset:
@@ -100,6 +120,19 @@ ClrCart:
     LDX ZP_P1+1
     CPX #$80
     BNE ClrCart
+; the empty and mode-8 row display lists and the blank DLL: static, copied
+; from ROM into console RAM (display lists must be in RAM)
+    LDA #<IMG_SMALLDL
+    STA ZP_P1
+    LDA #>IMG_SMALLDL
+    STA ZP_P1+1
+    LDA #<SMALLDL_AT
+    STA ZP_P2
+    LDA #>SMALLDL_AT
+    STA ZP_P2+1
+    LDA #<LEN_SMALLDL
+    LDX #>LEN_SMALLDL
+    JSR Copy
 ; system state
     LDA #$0F
     STA S_CONSOL            ; XEGS console keys: none pressed
@@ -531,11 +564,19 @@ ApplyDone:
 
 ; ------------------------------------------------------ list building
 ; BuildDll: the DLL for the list at table index S_DLIDX, into its buffer's
-; DLL. A descriptor is a run list: kind|$80 (DLI on the run's last line),
-; line count, argument; kind 0 blank, 1 mode-8 row (argument 0-2), 2 buffer
-; rows from the argument row on; $FF ends it. After the runs comes one blank
-; line with the DLI that stands in for the vertical blank, then blanks. It
-; runs in the NMI, so its scratch is its own (S_BTMP, not the loaders' S_TMP).
+; DLL, and the display lists of its buffer-row zones into the buffer's DL
+; area (DLS_A, DLS_B). A descriptor is a run list: kind|$80 (DLI on the
+; run's last line), line count, argument; kind 0 blank, 1 mode-8 row
+; (argument 0-2), 2 buffer rows from the argument row on; $FF ends it. After
+; the runs come blanks, with the DLI that stands in for the vertical blank
+; on line VBI_LINE. Zones: MARIA raises a zone's DLI as the zone starts, so a
+; flagged line is a zone of its own (as in the game lists, where the DLI is
+; on a run's last line); blank lines go in zones of up to 16; buffer rows in
+; zones of up to 16 within one column of the buffer (FB_BAND rows, one page
+; apart, the top row on the highest page: FINDINGS "display lists by the
+; 7800's rules"); the mode-8 rows' lines one a zone (each line repeats the
+; row's data). It runs in the NMI, so its scratch is its own (S_BTMP, not
+; the loaders' S_TMP).
 BuildDll:
     LDX S_DLIDX
     LDA DLT_DLO,X
@@ -548,20 +589,24 @@ BuildDll:
     STA ZP_P2
     LDA #>DLL_A
     STA ZP_P2+1
-    LDA #<DLA_BASE
-    STA S_ROWBASE
-    LDA #>DLA_BASE
-    STA S_ROWBASE+1
+    LDA #<DLS_A
+    STA S_DLSP
+    LDA #>DLS_A
+    STA S_DLSP+1
+    LDA #$00                ; buffer A's first column
+    STA S_SLOT
     JMP BuildGo
 BuildForB:
     LDA #<DLL_B
     STA ZP_P2
     LDA #>DLL_B
     STA ZP_P2+1
-    LDA #<DLB_BASE
-    STA S_ROWBASE
-    LDA #>DLB_BASE
-    STA S_ROWBASE+1
+    LDA #<DLS_B
+    STA S_DLSP
+    LDA #>DLS_B
+    STA S_DLSP+1
+    LDA #$03                ; buffer B's first column
+    STA S_SLOT
 BuildGo:
     LDA #$00
     STA S_LINES
@@ -587,43 +632,51 @@ BuildRunGo:
     BCC BuildKind
     INC ZP_P1+1
 BuildKind:
+    LDA #$00                ; the lines before a flagged last one
+    STA S_HASDLI
     LDA S_KIND
+    BPL BuildKind1
+    INC S_HASDLI
+    DEC S_COUNT
+BuildKind1:
     AND #$7F
-    BEQ BuildBlankRun
+    BNE BuildKind2
+    JMP BuildBlankRun
+BuildKind2:
     CMP #$01
-    BEQ BuildM8Run
-; buffer rows: the first row's DL is ROWBASE + 10 * argument
-    LDA S_ARG
-    STA S_ROWP
+    BNE BuildRowsZone
+    JMP BuildM8Run
+; buffer rows: zones, then the flagged last row alone
+BuildRowsZone:
+    LDA S_COUNT
+    BEQ BuildRowsLast
+    JSR RowsZoneH
+    STA S_H
     LDA #$00
-    STA S_ROWP+1
-    ASL S_ROWP              ; *2
-    ROL S_ROWP+1
-    LDA S_ROWP
-    STA S_BTMP
-    LDA S_ROWP+1
-    STA S_BTMP+1
-    ASL S_ROWP              ; *4
-    ROL S_ROWP+1
-    ASL S_ROWP              ; *8
-    ROL S_ROWP+1
-    LDA S_ROWP
+    STA S_FLAG
+    JSR RowsZoneEmit
+    LDA S_ARG
     CLC
-    ADC S_BTMP              ; *10
-    STA S_ROWP
-    LDA S_ROWP+1
-    ADC S_BTMP+1
-    STA S_ROWP+1
-    LDA S_ROWP
-    CLC
-    ADC S_ROWBASE
-    STA S_ROWP
-    LDA S_ROWP+1
-    ADC S_ROWBASE+1
-    STA S_ROWP+1
-    LDA #$0A
-    STA S_STEP
-    JMP BuildLines
+    ADC S_H
+    STA S_ARG
+    LDA S_COUNT
+    SEC
+    SBC S_H
+    STA S_COUNT
+    JMP BuildRowsZone
+BuildRowsLast:
+    LDA S_HASDLI
+    BNE BuildRowsLast1
+    JMP BuildRun
+BuildRowsLast1:
+    LDA #$01
+    STA S_H
+    LDA #$80
+    STA S_FLAG
+    INC S_NDLI
+    JSR RowsZoneEmit
+    JMP BuildRun
+; mode-8 row: its lines one a zone, the flagged last one included
 BuildM8Run:
     LDA S_ARG
     ASL A
@@ -637,61 +690,50 @@ BuildM8Run:
     LDA #>DL_M8
     ADC #$00
     STA S_ROWP+1
-    LDA #$00
-    STA S_STEP              ; every line of the row shows the same DL
-    JMP BuildLines
-BuildBlankRun:
-    LDA #<DL_EMPTY
-    STA S_ROWP
-    LDA #>DL_EMPTY
-    STA S_ROWP+1
-    LDA #$00
-    STA S_STEP
-BuildLines:
+    LDA #$01
+    STA S_H
+BuildM8Line:
     LDA #$00
     STA S_FLAG
     LDA S_COUNT
-    CMP #$01
-    BNE BuildLine
-    LDA S_KIND              ; the run's last line carries its DLI
-    AND #$80
-    STA S_FLAG
-    BEQ BuildLine
-    INC S_NDLI
-BuildLine:
+    BEQ BuildM8Last
     JSR PutEntry
-    LDA S_ROWP
-    CLC
-    ADC S_STEP
-    STA S_ROWP
-    BCC BuildLineNext
-    INC S_ROWP+1
-BuildLineNext:
     DEC S_COUNT
-    BNE BuildLines
+    JMP BuildM8Line
+BuildM8Last:
+    LDA S_HASDLI
+    BEQ BuildM8Done
+    LDA #$80
+    STA S_FLAG
+    INC S_NDLI
+    JSR PutEntry
+BuildM8Done:
+    JMP BuildRun
+; blank lines
+BuildBlankRun:
+    JSR BlankZones
+    LDA S_HASDLI
+    BEQ BuildBlankDone
+    INC S_NDLI
+    JSR BlankFlagged
+BuildBlankDone:
     JMP BuildRun
 BuildEnd:
 ; blanks to the end of the list; line VBI_LINE stands in for the vertical
 ; blank (where ANTIC's comes), leaving the game's handler the bottom lines and
 ; the top border to finish in before the next frame's first DLI, as on the
 ; XEGS (its DLI and VBI handlers share save bytes, so they must not overlap)
-    LDA #<DL_EMPTY
-    STA S_ROWP
-    LDA #>DL_EMPTY
-    STA S_ROWP+1
-BuildFill:
-    LDA #$00
-    LDX S_LINES
-    CPX #VBI_LINE
-    BNE BuildFillFlag
-    LDA #$80
-BuildFillFlag:
-    STA S_FLAG
-    LDA S_LINES
-    CMP #DLL_LINES
-    BCS BuildDone
-    JSR PutEntry
-    JMP BuildFill
+    LDA #VBI_LINE
+    SEC
+    SBC S_LINES
+    STA S_COUNT
+    JSR BlankZones
+    JSR BlankFlagged
+    LDA #DLL_LINES
+    SEC
+    SBC S_LINES
+    STA S_COUNT
+    JSR BlankZones
 BuildDone:
     LDX S_DLIDX
     LDA DLT_BUF,X
@@ -716,7 +758,153 @@ BuildDoneB:
     STA S_DLIST_B+1
     RTS
 
-; one DLL entry: DLI flag, DL address high, low (never past the list's end)
+; S_COUNT blank lines in zones of up to 16
+BlankZones:
+    LDA #<DL_EMPTY
+    STA S_ROWP
+    LDA #>DL_EMPTY
+    STA S_ROWP+1
+BlankZone:
+    LDA S_COUNT
+    BEQ BlankDone
+    CMP #17
+    BCC BlankZoneH
+    LDA #16
+BlankZoneH:
+    STA S_H
+    SEC
+    SBC #$01
+    STA S_FLAG
+    JSR PutEntry
+    LDA S_COUNT
+    SEC
+    SBC S_H
+    STA S_COUNT
+    JMP BlankZone
+BlankDone:
+    RTS
+; one blank line with a DLI
+BlankFlagged:
+    LDA #<DL_EMPTY
+    STA S_ROWP
+    LDA #>DL_EMPTY
+    STA S_ROWP+1
+    LDA #$01
+    STA S_H
+    LDA #$80
+    STA S_FLAG
+    JMP PutEntry
+
+; the next zone's height for buffer rows from S_ARG, S_COUNT of them: at
+; most 16, and within the row's column
+RowsZoneH:
+    LDA S_ARG
+RowsZoneMod:
+    CMP #FB_BAND
+    BCC RowsZoneIn
+    SBC #FB_BAND
+    JMP RowsZoneMod
+RowsZoneIn:
+    STA S_BTMP
+    LDA #FB_BAND
+    SEC
+    SBC S_BTMP              ; rows left in the column
+    CMP S_COUNT
+    BCC RowsZoneH1
+    LDA S_COUNT
+RowsZoneH1:
+    CMP #17
+    BCC RowsZoneH2
+    LDA #16
+RowsZoneH2:
+    RTS
+
+; the zone of S_H buffer rows from row S_ARG: its display list at S_DLSP
+; (the row's two 20-byte halves; MARIA reads line k of the zone at page
+; high + OFFSET, OFFSET counting down from S_H - 1, so high is the bottom
+; row's page), and its DLL entry with S_FLAG's DLI
+RowsZoneEmit:
+    LDA S_ARG
+    LDX S_SLOT
+RowsEmitMod:
+    CMP #FB_BAND
+    BCC RowsEmitIn
+    SBC #FB_BAND
+    INX
+    JMP RowsEmitMod
+RowsEmitIn:
+    STA S_BTMP              ; the top row's place in its column
+    LDA #FB_PTOP+1
+    SEC
+    SBC S_BTMP
+    SEC
+    SBC S_H
+    STA S_BTMP+1            ; the bottom row's page
+    LDA FbSlotLo,X
+    STA S_BTMP
+    LDA ZP_P1
+    PHA
+    LDA ZP_P1+1
+    PHA
+    LDA S_DLSP
+    STA ZP_P1
+    LDA S_DLSP+1
+    STA ZP_P1+1
+    LDY #$00
+    LDA S_BTMP
+    STA (ZP_P1),Y
+    INY
+    LDA #DL_W
+    STA (ZP_P1),Y
+    INY
+    LDA S_BTMP+1
+    STA (ZP_P1),Y
+    INY
+    LDA #$00
+    STA (ZP_P1),Y
+    INY
+    LDA S_BTMP
+    CLC
+    ADC #20
+    STA (ZP_P1),Y
+    INY
+    LDA #DL_W
+    STA (ZP_P1),Y
+    INY
+    LDA S_BTMP+1
+    STA (ZP_P1),Y
+    INY
+    LDA #80
+    STA (ZP_P1),Y
+    INY
+    LDA #$00
+    STA (ZP_P1),Y
+    INY
+    STA (ZP_P1),Y
+    PLA
+    STA ZP_P1+1
+    PLA
+    STA ZP_P1
+    LDA S_DLSP
+    STA S_ROWP
+    LDA S_DLSP+1
+    STA S_ROWP+1
+    LDA S_DLSP
+    CLC
+    ADC #10
+    STA S_DLSP
+    BCC RowsEmitEntry
+    INC S_DLSP+1
+RowsEmitEntry:
+    LDA S_H
+    SEC
+    SBC #$01
+    ORA S_FLAG
+    STA S_FLAG
+    JMP PutEntry
+
+; one DLL entry (S_FLAG: DLI flag and OFFSET; S_ROWP: its DL) covering S_H
+; lines (never past the list's end)
 PutEntry:
     LDA S_LINES
     CMP #DLL_LINES
@@ -739,8 +927,203 @@ PutEntryGo:
     BCC PutEntryDone
     INC ZP_P2+1
 PutEntryDone:
-    INC S_LINES
+    LDA S_LINES
+    CLC
+    ADC S_H
+    STA S_LINES
     RTS
+
+; ------------------------------------------------ the framebuffers' rows
+; Both framebuffers are laid out for MARIA's multi-line zones: a row is 40
+; bytes in one page, the row below it one page lower. Pages FB_PBOT-FB_PTOP
+; each hold six rows side by side at bytes 16-255 (FbSlotLo; bytes 0-15 are
+; left, and $4000-$400F is the cartridge's POKEY). Buffer A is columns 0-2,
+; B columns 3-5, each column FB_BAND rows from the top page down. So the
+; game's "40 bytes on" is "one page down, or the next column's top".
+; RowAddr: A = row (0 to FB_ROWS-1) of the buffer $07 names ($20 B, else A):
+; its first byte into $14/$15. Uses A only (the game's row address kept X
+; and Y).
+RowAddr:
+    STA S_RROW
+    LDA G_Z07
+    CMP #$20
+    BEQ RowAddrB
+    LDA #16
+    BNE RowAddrCol
+RowAddrB:
+    LDA #136
+RowAddrCol:
+    STA G_Z14               ; column 0's first byte
+    LDA S_RROW
+    CMP #FB_BAND
+    BCC RowAddrIn
+    SBC #FB_BAND
+    PHA
+    LDA G_Z14
+    ADC #39                 ; (carry set) the next column
+    STA G_Z14
+    PLA
+    CMP #FB_BAND
+    BCC RowAddrIn
+    SBC #FB_BAND
+    PHA
+    LDA G_Z14
+    ADC #39
+    STA G_Z14
+    PLA
+RowAddrIn:
+    EOR #$FF                ; the page: FB_PTOP - place
+    SEC
+    ADC #FB_PTOP
+    STA G_Z15
+    RTS
+; RowNext: $14/$15 to the same byte of the next row down (the game's
+; ADC #$28). A pointer that isn't in a buffer (the clip row) only moves on a
+; page. Uses A only.
+RowNext:
+    DEC G_Z15
+    LDA G_Z15
+    CMP #FB_PBOT-1
+    BNE RowNextDone
+    LDA #FB_PTOP            ; below the column's foot: the next column's top
+    STA G_Z15
+    LDA G_Z14
+    CLC
+    ADC #40
+    STA G_Z14
+RowNextDone:
+    RTS
+; RowNextC: RowNext, and the carry added to the byte (the mirrored blitter
+; moves 40 bytes plus its shift's odd bit, and a byte back at the loop's top)
+RowNextC:
+    BCC RowNext             ; (even: the plain step)
+    JSR RowNext
+    INC G_Z14
+    BNE RowNextCDone
+    INC G_Z15
+RowNextCDone:
+    RTS
+; the step's rare half, for the steps written inline in the game's code
+; (DEC high / LDA high / CMP #FB_PBOT-1 / BNE / JSR here): a column's foot
+; left, the next column's top
+RowWrap:
+    LDA #FB_PTOP
+    STA G_Z15
+    LDA G_Z14
+    CLC
+    ADC #40
+    STA G_Z14
+    RTS
+RowWrapE0:
+    LDA #FB_PTOP
+    STA G_ZE0+1
+    LDA G_ZE0
+    CLC
+    ADC #40
+    STA G_ZE0
+    RTS
+RowWrapE2:
+    LDA #FB_PTOP
+    STA G_ZE2+1
+    LDA G_ZE2
+    CLC
+    ADC #40
+    STA G_ZE2
+    RTS
+; the story scroll's two pointers ($E0 into the buffer drawn, $E2 from the
+; other), each one row on (its $084B; X is its loop count)
+RowNextE:
+    DEC G_ZE0+1
+    LDA G_ZE0+1
+    CMP #FB_PBOT-1
+    BNE RowNextE2
+    LDA #FB_PTOP
+    STA G_ZE0+1
+    LDA G_ZE0
+    CLC
+    ADC #40
+    STA G_ZE0
+RowNextE2:
+    DEC G_ZE2+1
+    LDA G_ZE2+1
+    CMP #FB_PBOT-1
+    BNE RowNextEDone
+    LDA #FB_PTOP
+    STA G_ZE2+1
+    LDA G_ZE2
+    CLC
+    ADC #40
+    STA G_ZE2
+RowNextEDone:
+    RTS
+; its start: $E2 the row after $14/$15's (its $0830)
+RowNextS:
+    JSR RowNext
+    LDA G_Z14
+    STA G_ZE2
+    LDA G_Z15
+    STA G_ZE2+1
+    RTS
+; the game's full clear ($280F): the buffer $07 names, all its rows
+ClearBuf:
+    LDA G_Z07
+    CMP #$20
+    BEQ ClearBufB
+    LDA #16
+    BNE ClearBufGo
+ClearBufB:
+    LDA #136
+ClearBufGo:
+    STA G_Z14
+    LDA #FB_PBOT
+    STA G_Z15
+ClearBufPage:
+    LDY #119                ; the buffer's three rows on this page
+    LDA #$00
+ClearBufByte:
+    STA (G_Z14),Y
+    DEY
+    BPL ClearBufByte
+    INC G_Z15
+    LDA G_Z15
+    CMP #FB_PTOP+1
+    BNE ClearBufPage
+    RTS
+; the game's buffer copy ($ADC7 and $AE05): with $07 = $40 (A drawn) B into
+; A, else A into B, all rows; through $03/$04 and $14/$15 as the game's
+CopyBuf:
+    LDA G_Z07
+    CMP #$40
+    BNE CopyBufAB
+    LDA #136
+    STA G_Z03
+    LDA #16
+    STA G_Z14
+    BNE CopyBufGo
+CopyBufAB:
+    LDA #16
+    STA G_Z03
+    LDA #136
+    STA G_Z14
+CopyBufGo:
+    LDA #FB_PBOT
+    STA G_Z04
+    STA G_Z15
+CopyBufPage:
+    LDY #119
+CopyBufByte:
+    LDA (G_Z03),Y
+    STA (G_Z14),Y
+    DEY
+    BPL CopyBufByte
+    INC G_Z04
+    INC G_Z15
+    LDA G_Z15
+    CMP #FB_PTOP+1
+    BNE CopyBufPage
+    RTS
+FbSlotLo:                   ; each column's first byte in its pages
+    .byte 16,56,96,136,176,216
 
 ; ------------------------------------------------------------- loading
 ; the XEGS loader's two entries: $2F5A (common, then the scene) and $2F66
@@ -779,17 +1162,6 @@ LoadScene:
     LDA #ART_BANK
     STA S_BANK
     STA BANKSEL
-    LDA #<IMG_ENGINE1
-    STA ZP_P1
-    LDA #>IMG_ENGINE1
-    STA ZP_P1+1
-    LDA #<RAM_ENGINE1
-    STA ZP_P2
-    LDA #>RAM_ENGINE1
-    STA ZP_P2+1
-    LDA #<LEN_ENGINE1
-    LDX #>LEN_ENGINE1
-    JSR Copy
     LDA #<IMG_ENGINE2
     STA ZP_P1
     LDA #>IMG_ENGINE2
@@ -1449,12 +1821,8 @@ ColNext:
     CMP S_CLIM
     BCS ColLast
     JSR ColPiece
-    LDA G_Z14               ; the next piece: 2 rows down
-    CLC
-    ADC #80
-    STA G_Z14
-    BCC ColNext
-    INC G_Z15
+    JSR J_ROWNEXT          ; the next piece: 2 rows down
+    JSR J_ROWNEXT
     JMP ColNext
 ColLast:
     JSR G_L284E             ; the last piece
@@ -1554,6 +1922,10 @@ ColTNoFirst:
 ColTNoEdgeK:
     LDA S_CR
     JSR ColRow              ; the first piece's first row
+    LDA G_Z14
+    STA S_CPL
+    LDA G_Z15
+    STA S_CPH
     LDX #$00
     LDY #$00
     LDA S_CH
@@ -1571,15 +1943,16 @@ ColTByte:
     DEC S_CJ
     BNE ColTByte
     LDX #$08                ; row 2
-    LDY #40
+    LDY #$00
+    JSR J_ROWNEXT
     DEC S_CHH
     BNE ColTRow
-    LDA G_Z14               ; the next piece: 2 rows down
-    CLC
-    ADC #80
+    LDA S_CPL               ; the next piece: 2 rows down
     STA G_Z14
-    BCC ColTEnd
-    INC G_Z15
+    LDA S_CPH
+    STA G_Z15
+    JSR J_ROWNEXT
+    JSR J_ROWNEXT
 ColTEnd:
     CLC
     RTS
@@ -1614,6 +1987,10 @@ ColPFit:
     LDA #$01
     STA S_STTOUCH
 ColPNoSt:
+    LDA G_Z14
+    STA S_CPL
+    LDA G_Z15
+    STA S_CPH
     LDX #$00
     LDY #$00
 ColPRow:
@@ -1629,9 +2006,14 @@ ColPByte:
     DEC S_CJ
     BNE ColPByte
     LDX #$08
-    LDY #40
+    LDY #$00
+    JSR J_ROWNEXT          ; row 2
     DEC S_CHH
     BNE ColPRow
+    LDA S_CPL
+    STA G_Z14
+    LDA S_CPH
+    STA G_Z15
 ColPRet:
     RTS
 
@@ -1643,47 +2025,12 @@ ColMask2:                   ; its $2985: kept right of it, in the edge byte
 ;;; PART
 ; $14/$15 = row A of the buffer being drawn, at the blit's column $1E
 ColRow:
-    STA G_Z14
-    LDA #$00
-    STA G_Z15
+    JSR J_ROWADDR
     LDA G_Z14
-    ASL A
-    ROL G_Z15
-    ASL A
-    ROL G_Z15
-    CLC
-    ADC G_Z14               ; 5r
-    BCC ColRow5
-    INC G_Z15
-ColRow5:
-    ASL A
-    ROL G_Z15
-    ASL A
-    ROL G_Z15
-    ASL A
-    ROL G_Z15               ; 40r
     CLC
     ADC G_Z1E
-    BCC ColRowC
-    INC G_Z15
-ColRowC:
-    LDX #$00                ; the buffer: 0 A, 1 B
-    LDY G_Z07
-    CPY #$20
-    BNE ColRowA
-    INX
-ColRowA:
-    CLC
-    ADC ColBaseL,X
     STA G_Z14
-    LDA G_Z15
-    ADC ColBaseH,X
-    STA G_Z15
     RTS
-ColBaseL:
-    .byte <FBA_ROW0,<FBB_ROW0
-ColBaseH:
-    .byte >FBA_ROW0,>FBB_ROW0
 ;;; END LEVEL1PAGE
 ;;; RAMFILL -- assembled at $7203 (cart RAM free between the engine's two
 ;;; parts) and copied there at load (CopyFill); the jump table must stay
@@ -1702,11 +2049,75 @@ RfPass:
 RfPattern:
     JMP FillPat
 
+; (first, so the patch code is in one page: FpPatchLo holds low bytes)
+; one block: its rows' addresses into the store block, then the block (its
+; RTS returns from here); $14/$15 move on to the next block's first row
+FpOne:
+    LDA G_Z14
+    LDY G_Z15
+FpJmp:
+    JMP FpPatch0
+; rows one apart: each store's row, then one row down (a page, or at a
+; column's foot the next column's top: sys7800 RowNext, inline)
+FpPatch0:
+    STA FILL_BLK+1
+    STY FILL_BLK+2
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpPatch1
+    JSR FpWrap
+FpPatch1:
+    STA FILL_BLK+4
+    STY FILL_BLK+5
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpPatch2
+    JSR FpWrap
+FpPatch2:
+    STA FILL_BLK+7
+    STY FILL_BLK+8
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpPatch3
+    JSR FpWrap
+FpPatch3:
+    STA FILL_BLK+10
+    STY FILL_BLK+11
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpPatched
+    JSR FpWrap
+    JMP FpPatched
+; rows two apart (the pattern fill): two steps each
+FpQatch0:
+    STA FILL_BLK+1
+    STY FILL_BLK+2
+    JSR FpStep2
+FpQatch1:
+    STA FILL_BLK+4
+    STY FILL_BLK+5
+    JSR FpStep2
+FpQatch2:
+    STA FILL_BLK+7
+    STY FILL_BLK+8
+    JSR FpStep2
+FpQatch3:
+    STA FILL_BLK+10
+    STY FILL_BLK+11
+    JSR FpStep2
+FpPatched:
+    STA G_Z14
+    STY G_Z15
+    LDX G_Z0E
+    LDA S_FVAL
+FpGo:
+    JMP FILL_BLK
+
 ; the pattern: rows alternate $12 and $02, the last row $02 (the game's X
 ; counts the rows down: odd $02, even $12). The $12 rows first, then the $02
 ; rows, each 80 bytes apart, so the last pass ends at the last row
 FillPat:
-    LDA #80
+    LDA #$02                ; every other row
     STA S_FSTRIDE
     LDA G_Z12
     STA S_FVAL
@@ -1718,11 +2129,7 @@ FillPat:
     LSR A
     STA S_FCOUNT            ; $12 rows: half, rounded down
     BCC FpEvenH             ; an even count: from the first row
-    LDA G_Z14               ; odd: from the second (carry set: +40)
-    ADC #39
-    STA G_Z14
-    BCC FpEvenH
-    INC G_Z15
+    JSR FpNextZ             ; odd: from the second row
 FpEvenH:
     JSR FillPass
     LDA G_Z0D
@@ -1731,24 +2138,28 @@ FpEvenH:
     STA S_FCOUNT            ; $02 rows: half, rounded up
     LDA G_Z02
     STA S_FVAL
+    LDA S_FP0
+    STA G_Z14
+    LDA S_FP0+1
+    STA G_Z15
     LDA G_Z0D
     LSR A
-    LDA S_FP0
-    LDX S_FP0+1
     BCS FpSecond            ; an odd count: from the first row
-    ADC #40                 ; even: from the second
-    BCC FpSecond
-    INX
+    JSR FpNextZ             ; even: from the second
 FpSecond:
-    STA G_Z14
-    STX G_Z15
     JSR FillPass
     JMP G_L2D3E
 
-; S_FCOUNT rows of S_FVAL from $14/$15, S_FSTRIDE apart, $0E+1 bytes each;
+; S_FCOUNT rows of S_FVAL from $14/$15, S_FSTRIDE rows apart, $0E+1 bytes each;
 ; leaves $14/$15 at the last row and Y = $FF. The rows over a multiple of 4
 ; first (entering the block part way), then whole blocks of 4
 FillPass:
+    LDA S_FSTRIDE           ; 1 or 2 rows apart: the patch sequence
+    SEC
+    SBC #$01
+    ASL A
+    ASL A
+    STA FpSeq
     LDA S_FCOUNT
     AND #$03
     BEQ FpFull
@@ -1756,7 +2167,10 @@ FillPass:
     SEC
     ADC #$04
     TAX                     ; the first of the block's 4 stores used
-    LDA FpPatchLo,X
+    CLC
+    ADC FpSeq               ; the sequence for the stride
+    TAY
+    LDA FpPatchLo,Y
     STA FpJmp+1
     STX S_FT
     TXA
@@ -1774,7 +2188,8 @@ FpFull:
     LSR A
     STA S_FK                ; whole blocks
     BEQ FpDone
-    LDA #<FpPatch0
+    LDY FpSeq
+    LDA FpPatchLo,Y
     STA FpJmp+1
     LDA #<FILL_BLK
     STA FpGo+1
@@ -1786,60 +2201,53 @@ FpFullLoop:
     DEC S_FK
     BNE FpFullLoop
 FpDone:
-    LDA G_Z14               ; back one stride: the last row
-    SEC
-    SBC S_FSTRIDE
+    LDA S_FCOUNT
+    BEQ FpDoneHi
+    LDA FILL_BLK+10         ; the last row: the last block's fourth store's
     STA G_Z14
-    BCS FpDoneHi
-    DEC G_Z15
+    LDA FILL_BLK+11
+    STA G_Z15
 FpDoneHi:
     LDY #$FF
     RTS
 
-; one block: its rows' addresses into the store block, then the block (its
-; RTS returns from here); $14/$15 move on to the next block's first row
-FpOne:
-    LDA G_Z14
-    LDY G_Z15
-FpJmp:
-    JMP FpPatch0
-FpPatch0:
-    STA FILL_BLK+1
-    STY FILL_BLK+2
-    CLC
-    ADC S_FSTRIDE
-    BCC FpPatch1
-    INY
-FpPatch1:
-    STA FILL_BLK+4
-    STY FILL_BLK+5
-    CLC
-    ADC S_FSTRIDE
-    BCC FpPatch2
-    INY
-FpPatch2:
-    STA FILL_BLK+7
-    STY FILL_BLK+8
-    CLC
-    ADC S_FSTRIDE
-    BCC FpPatch3
-    INY
-FpPatch3:
-    STA FILL_BLK+10
-    STY FILL_BLK+11
-    CLC
-    ADC S_FSTRIDE
-    BCC FpPatched
-    INY
-FpPatched:
-    STA G_Z14
-    STY G_Z15
-    LDX G_Z0E
-    LDA S_FVAL
-FpGo:
-    JMP FILL_BLK
 FpPatchLo:
     .byte <FpPatch0,<FpPatch1,<FpPatch2,<FpPatch3
+    .byte <FpQatch0,<FpQatch1,<FpQatch2,<FpQatch3
+FpSeq:
+    .byte $00               ; 0 rows one apart, 4 two apart
+; A/Y (a row's address) past a column's foot: the next column's top (a
+; pointer outside the buffers, the clip row, never gets here)
+FpWrap:
+    LDY #FB_PTOP
+    CLC
+    ADC #40
+    RTS
+; A/Y two rows down
+FpStep2:
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpStep2b
+    JSR FpWrap
+FpStep2b:
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpStep2c
+    JSR FpWrap
+FpStep2c:
+    RTS
+; $14/$15 one row down
+FpNextZ:
+    LDA G_Z14
+    LDY G_Z15
+    DEY
+    CPY #FB_PBOT-1
+    BNE FpNextZ1
+    JSR FpWrap
+FpNextZ1:
+    STA G_Z14
+    STY G_Z15
+    RTS
 ;;; END RAMFILL
 
 ;;; FAR (RowBase) -- each ;;; FAR piece below is assembled on its own and
@@ -1847,9 +2255,10 @@ FpPatchLo:
 ;;; left); a piece may use equates but not labels from above or from another
 ;;; piece, and the block above reaches it through equates the build supplies
 ;
-; RowBase: the start of the game's $2D46 (row Y - 35, times 40, into $14/$15;
-; the game's code after the call adds the buffer $07 names), with the bottom
-; check it lacks. The blitters and fills that call it draw $0D rows 40 bytes
+; RowBase: the game's $2D46 (row Y - 35, its first byte in the buffer $07
+; names, into $14/$15; the rows are one page apart, so SysRowAddr, and the
+; game's times-40 and buffer base after the call are skipped), with the
+; bottom check it lacks. The blitters and fills that call it draw $0D rows 40 bytes
 ; apart from there; a draw that ran past row 153 wrote over whatever follows
 ; the buffer (on the 7800, the engine). So $0D is cut to the rows left, and a
 ; draw that starts at or past the bottom -- or above the top, where Y - 35
@@ -1880,9 +2289,11 @@ RowFits:
     LDA #$01
     STA S_STTOUCH           ; the status bar's cache is stale for this buffer
 RowNotStatus:
-    LDA #$28
-    STA G_L2DA2
-    JMP G_L2D78             ; row * 40; its RTS goes back into $2D46
+    LDA G_L2DA1             ; the row
+    JSR J_ROWADDR           ; its first byte in the buffer $07 names
+    PLA                     ; not back into $2D46 (its buffer base is in
+    PLA                     ; already): to its caller
+    RTS
 RowOff:
     PLA                     ; not back into $2D46: to its caller, with
     PLA                     ; the scratch row as the address

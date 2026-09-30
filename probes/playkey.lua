@@ -158,13 +158,25 @@ local function counted(a, d)
   end
   if want[n] then
     local o = io.open(string.format("fbk%d.bin", n), "wb")
-    for _, base in ipairs({A, B}) do
+    for bi, base in ipairs({A, B}) do
       local t = {}
-      for i = 0, 0x17E7 do t[#t + 1] = string.char(mem:read_u8(base + i)) end
+      if xe then
+        for i = 0, 0x17E7 do t[#t + 1] = string.char(mem:read_u8(base + i)) end
+      else
+        -- the 7800's rows are one page apart (build7800 fb_row: pages $72
+        -- down, six 40-byte rows a page from byte 16; A columns 0-2, B 3-5,
+        -- 51 rows a column): dumped row by row as the XEGS lays them out
+        for r = 0, 152 do
+          local col = 3 * (bi - 1) + r // 51
+          local at = (0x72 - r % 51) * 256 + 16 + 40 * col
+          for i = 0, 39 do t[#t + 1] = string.char(mem:read_u8(at + i)) end
+        end
+      end
       o:write(table.concat(t))
     end
     o:close()
-    log:write(string.format("flip %d D0=%02X\n", n, mem:read_u8(ZD0)))
+    if os.getenv("SNAPS") then M.video:snapshot() end   -- SNAPS=1: the screen too
+    log:write(string.format("flip %d D0=%02X at f%d\n", n, mem:read_u8(ZD0), PK_FRAME or -1))
     log:flush()
     if n >= last then log:close(); M:exit() end
   end
@@ -184,6 +196,7 @@ local SNAPAT = tonumber(os.getenv("SNAPAT") or "-1")   -- a snapshot at this fra
 local f = 0
 emu.register_frame_done(function()
   f = f + 1
+  PK_FRAME = f                 -- (global: the flip log above reads it)
   if f % 100 == 0 then
     log:write(string.format("f%d flips %d D0=%02X PC=%04X SP=%02X\n", f, n, mem:read_u8(ZD0), PCs.value,
       cpu.state["SP"].value & 0xFF))

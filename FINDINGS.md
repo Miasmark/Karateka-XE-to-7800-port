@@ -2717,3 +2717,576 @@ Checkpoint before the merge: `../Karateka-Port-checkpoints/2026-09-27_KEEP_befor
 (the source, both cartridges, the kit), kept until this build proves
 itself on hardware. The fork continues with the display rework (MARIA
 drawing the fighters).
+
+## karateka-enh: display lists by the 7800's rules (2026-09-29)
+A new fork of the stable build (`Karateka-Port`, commit `20f73ef`), made
+after the one-line-zone prototype was stopped (`../karateka-proto`,
+FINDINGS there). It builds the stable cartridge byte for byte.
+
+**The user's goal 1:** make the stable build follow the 7800 Software
+Guide's display list rules, by moving to 8- or 16-line zones.
+
+**The rules** (7800 Software Guide, "Display List List"):
+- a display list list (DLL) may cross only one page boundary, so it is at
+  most 512 bytes; so may a display list (DL);
+- both must be in RAM ("due to the required access time");
+- OFFSET counts down: a zone's top line reads page `high + OFFSET`, each
+  line below it one page lower;
+- holey DMA (odd 4K or 2K blocks read as zeros) works only for addresses
+  above `$8000`.
+
+**The stable build against them:**
+- each DLL has 243 one-line entries: 729 bytes. `DLL_A` (`$2200-$24D8`)
+  crosses two page boundaries, `DLL_B` (`$24E0-$27B8`) three;
+- the DLs are in ROM: the row lists (10 bytes a buffer row, both buffers:
+  3,060 bytes of the fixed bank), `DL_EMPTY`, the Mode8 row lists.
+
+**Merging only the blank lines isn't enough.** Scenes 0-2 show all 153
+buffer rows; with one entry a row, the Mode8 rows and the blanks merged,
+the busiest list still needs about 183 entries (about 550 bytes). The
+buffer rows themselves must be in multi-line zones.
+
+**The game's lists** (every list the port uses, as runs: blanks, Mode8
+rows of 8 lines, buffer rows): the six game DLIs fall at fixed lines,
+e.g. scene 1's `$1908` after buffer rows 37, 78, 89, 132 and 145. MARIA
+raises a DLI after the last line of the zone before the flagged entry, so
+a zone must start at each of them (the port flags the run's last line).
+
+**What multi-line zones need of the buffers:** a zone's rows one page
+apart, the top row on the highest page. A row can't run past its page's
+end, so a page holds six 40-byte rows (16 bytes over). Both buffers, 306
+rows, need 51 pages; `$4000-$6FFF` has 48 (the engine is at `$7000`).
+
+**The code that writes the buffers** (`p7800-fbwork.lua`, the attract
+sequence and scripted play, 9,000 frames; each steps 40 bytes a row today):
+
+| PC | what |
+|---|---|
+| `$9845` | the story scroll (`$0845`; moves most of the screen each flip) |
+| `$7927`, `$7946` | blitter A's stores |
+| `$7B12`, `$7B3E` | blitter B/C's stores |
+| `$7D19`-`$7D22` | the fast fill's four-row store block |
+| `$7837` | the full clear (`$280F`) |
+| `$CE09` | the buffer copy (`$ADCA`) |
+| `$815A` | level 1's column routine |
+| `$E15F` | the reset's RAM clear |
+
+The Mode8 expansion reads the buffers too.
+
+**The engine's RAM** (`probes/p7800-enginewrites.lua`): in the attract
+sequence, only 56 of its bytes are written after loading: the operands
+the blitters and fills patch into themselves (`$7839`, `$78FA-$78FB`,
+`$791D-$791E`, `$7925-$7926`, `$7ADA-$7ADB`, `$7AFF-$7B00`,
+`$7B10-$7B11`, `$7CCC`, `$7D1A-$7D27`, `$7DA1-$7DA2`), a few bytes at
+`$7193`, `$72B8`, `$72F8`, and the routine the game builds at `$7409`
+(25 bytes). In play the loader (`$E6F3`) copies the whole engine again at
+each scene's load. So most of the engine is read-only once loaded.
+
+### Step 1: the engine's first part in the fixed bank (2026-09-29)
+- `engine1` (XEGS `$1000-$1202`) is now assembled for the fixed bank at
+  `$F200` (layout `ENGINE1_AT`, kind "fixed") and no longer copied to cart
+  RAM at each scene's load. Its save slot `$1193-$1196` (the only bytes
+  the original writes there) is carved out to console RAM `$184E`
+  (`CARVE_ENGINE1`; not copied at load: the game writes it before reading).
+  Cart RAM `$7000-$7202` is free.
+- **Found: a move must be by whole pages.** The first try put it at
+  `$F2E0`: the first display list interrupt jumped to `$F326`, the middle
+  of the handler, and returned into the stack page. The game sets its DLI
+  vector with separate low and high byte constants, and the relocation
+  fixes only high bytes (every region so far moved by whole pages). At
+  `$F200` the low bytes stay right.
+- **Room for it, for now:** a development switch (`ENH_DEV1=1`) makes buffer
+  B's ROM row lists the same as A's, which frees 1,530 bytes of the fixed
+  bank. The display is wrong in that build (B shows A); the framebuffers
+  aren't affected. Step 2 removes the ROM row lists for good.
+- **Checked:** `port/regress.sh` (scenes 1-4 against the original, both
+  buffers at every checkpoint): 0 bytes differ. Scene 0 (title, story,
+  attract fight) ran 9,000 frames without a bad fetch
+  (`probes/p7800-crashtrace.lua`).
+
+### Step 2: multi-line zones, display lists in RAM (2026-09-29)
+**Done: the build follows the display list rules.**
+- DLLs in console RAM, a page each: `DLL_A` `$2200`, `DLL_B` `$2300`. The
+  largest list is 51 entries (153 bytes; scene 0's `$1908`), so none
+  crosses a page boundary at all.
+- Display lists in RAM: each zone's list (10 bytes: the row's two 20-byte
+  halves and the end) in `$2400` (buffer A) or `$2500` (B), at most 18 a
+  list (180 bytes). The empty list, the three Mode8 row lists and the blank
+  DLL are static: copied at boot from an image in the system block to
+  `$2780`.
+- The ROM row lists (3,060 bytes of the fixed bank) are gone; the system
+  block now ends at `$EB74`, and 2,244 bytes of the fixed bank are free. The
+  development switch of step 1 (`ENH_DEV1`) is gone with them.
+- The build checks every list the port uses: at most 85 DLL entries and 25
+  zone lists (`build7800.zones`, the builder's rules in Python).
+
+**The framebuffers** (`build7800.fb_row`, `sys7800.asm` `RowAddr`): pages
+`$40-$72`, six 40-byte rows a page at bytes 16-255 (bytes 0-15 are left
+free; `$4000-$400F` is the cartridge's POKEY). Buffer A is columns 0-2,
+B columns 3-5; a column is 51 rows, from page `$72` down. So "the next
+row" is one page down, or at a column's foot (`$40`) the next column's top.
+Each buffer is 120 bytes of every page, so the clear and the copy are page
+loops. Cart RAM `$7000-$72FF` now holds rows; the fast fill moved to
+console RAM `$2600`.
+
+**The zone builder** (`BuildDll`, rewritten; it runs in the NMI when a
+buffer's list changes):
+- a line with a game DLI is a zone of its own (MARIA raises the DLI as the
+  flagged zone starts, after the previous zone's last line: the same line
+  as before);
+- blank lines: zones of up to 16;
+- buffer rows: zones of up to 16 within one column; the zone's list points
+  at the bottom row's page (MARIA reads line k at page `high + OFFSET`,
+  OFFSET counting down from the zone's height less one);
+- the Mode8 rows stay one line a zone: each of their 8 lines repeats the
+  row, and a multi-line zone reads a new page each line;
+- the vertical blank stand-in (`VBI_LINE`) as before.
+
+**What changed in the game's drawing:**
+
+| where | was | now |
+|---|---|---|
+| row address (`$2D46`, `SysRowBase`) | row × 40, then `$2D56` adds the buffer | `RowAddr`, returning past `$2D56` |
+| blitter A's next row (`$295F`) | `ADC #$28` | `JSR SysRowNext` |
+| the mirrored blitter's (`$2B5A`) | `ADC #$28` plus the shift's odd bit | `JSR SysRowNextC` (the carry kept) |
+| the fills (fast fill, `;;; RAMFILL`) | strides of 40 or 80 bytes | 1 or 2 row steps (`FpStep`); the last row from the last store, not a step back |
+| the full clear (`$280F-$284D`) | linear, self-modifying | `SysClearBuf`, page by page |
+| the buffer copy (`$AD83`) | `$ADC7` and `$AE05`, linear | `SysCopyBuf`, page by page |
+| the story scroll (`$0830`, `$084B`) | two pointers, +40 a row | `SysRowNextS`, `SysRowNextE` |
+| level 1's columns (`LEVEL1PAGE`) | a piece's second row at Y + 40, the next piece +80 | explicit row steps, the piece's first row kept |
+| Mode8's source | the buffer's first 30 bytes | row 0's first 30 bytes (`FBA_ROW0`/`FBB_ROW0` now row 0's address) |
+
+The row routines use A only: the game's row address kept X and Y, and the
+story scroll keeps its loop count in X. A pointer outside the buffers
+(RowBase's clip row) only moves a page, so it never lands in a buffer.
+
+**Found on the way:**
+- Pieces assembled apart (the level 1 parts, the `;;; FAR` pieces) see
+  equates only: they call the new routines through `J_ROWNEXT` and
+  `J_ROWADDR` (the jump table's addresses).
+- The build's fast-fill label filter assumed `$7203-$72FF`; it now follows
+  `RAMFILL_TABLE`.
+
+**Checked:**
+- `port/regress.sh` (the dumps read row by row from the new layout,
+  `probes/playkey.lua`): scenes 1-4, both buffers at every checkpoint, 0
+  bytes differ from the original.
+- The screen against the stable build at the same checkpoints
+  (`playkey.lua SNAPS=1`, the stable run with its own symbols through
+  `run7800.sh SYMFILE`/`ZPFILE`): scene 1 (4 pictures) and scene 3 (3)
+  pixel for pixel identical.
+- The attract sequence by picture (`probes/p7800-snapflips.lua`, every
+  10th flip, 71 pictures): the title and story identical; 11 pictures of
+  the demo fight differ, all in the health arrows' colour (their flashing
+  caught at another point, and in one picture only the first status line):
+  the two builds reach the same picture at different frames, since this one
+  runs about 2% slower (flip 710 at frame 8,978 against 8,766).
+- Scene 0 ran 2,000 frames with no bad fetch.
+
+**Still open:**
+- About 2% slower in the attract sequence: the row steps are now calls.
+- Whether the first status line's colour differs only with timing, or the
+  new zones move the last DLI's colour change, is not settled.
+- Not yet run on hardware.
+
+### Late colours: a flickering floor line (2026-09-29)
+Reported from hardware on the zone build: "a flickering row of pixels
+during the intro animation in the lower right, just below the floor line in
+the princess room in the attract mode animation. and there is a flickering
+line in the floor during the animation with Akuma after the first level."
+
+**Reproduced in MAME, and in the stable build too** (so not the zones):
+`probes/p7800-snaprange.lua` (a snapshot every frame) through the princess
+room, and a flicker finder (pixels that go A, B, A): screen line 189,
+x 280-317, grey for one frame in every four, on both builds; the original
+(XEGS, `probes/xe-snapevery.lua`) shows nothing of the kind.
+
+**What it is:**
+- The princess room and the Akuma hall use the lists `$1908`/`$19B3`,
+  whose last buffer rows are the status bar's (rows 146-152). The floor's
+  far end reaches into row 146, and the game hides it there with the status
+  bar's colours: black.
+- The colours come from the game's DLI handler (`$1026`, engine1), which
+  works by its count in the frame (`$1A9A`): the third and sixth DLIs set the
+  colours (`$F2F4`: `$25-$28` from a table; the sixth's are the status bar's,
+  all black), the other four run the music driver, alternating a short and
+  a long path (up to about 11 lines in MAME on a note's tick).
+- The port runs one DLI at a time (the game's handlers share save bytes;
+  a DLI inside a DLI once sent the blitter into the engine), so a DLI that
+  arrives during another waits for it. In scene 0's lists the fifth DLI (a
+  music one) is 3 lines above the sixth; in the others, 13. On a long tick
+  the sixth waited until the fifth was done, and its black landed after row
+  146's line had started: the floor's pixels showed in grey.
+- Measured (`probes/p7800-nmitime.lua`, `probes/p7800-colwrites.lua`;
+  lines estimated from emulated time, as this MAME's screen has no `vpos`):
+  normal frames, the fifth handler 4 lines, the colours 5 lines after it;
+  the flicker frames, the fifth 11 lines, the colours 7 lines later.
+- On the XEGS a DLI interrupts a DLI (the 6502 takes an NMI inside an NMI),
+  so the colours come on time there.
+
+**The fix** (`build7800.space_dlis`): the music DLIs change nothing on
+screen, so the build moves any music DLI closer than `DLI_GAP` (28) lines
+above a colour DLI up to 28 lines above it, or just below the DLI before
+it (the run is split there). Every list keeps its six DLIs in the same order,
+and the colour DLIs stay on the game's lines. In practice the fifth DLI
+moves to line 165 in every list (from 190 in scene 0's, 180 in the
+others); the second moves up one line in scene 2's and 3's lists. The music
+driver's timing within the frame moves by at most 25 lines (about 1.6 ms).
+`NO_DLI_SPACE=1` builds without it, for comparison.
+
+**Checked:** the princess room, 1,301 frames: no flicker at all (it was
+line 189 every fourth frame). The Akuma cutscene doesn't flicker in MAME
+with or without the fix (13 lines were enough there in MAME, evidently not
+on hardware); 28 lines leave the handler more than twice MAME's longest.
+
+**Also for the stable build:** it has the same fault (measured above). The
+fix is the same few lines in `build7800.py`.
+
+### Dots on the floor in the Akuma hall (2026-09-29)
+Reported from hardware with a screenshot: "a series of dots on the floor in
+front of the door that blink seems to blink mostly during akuma animation."
+
+**Reproduced in MAME, the zone build only** (the stable build's same run:
+none). Screen line 168, x 250-271: orange and white dots (Akuma's colours)
+on and off over stretches of frames, so the one-frame flicker finder missed
+it; a crop of the floor every 15 frames showed it. Buffer B's row 129 had
+`13 13 11` at bytes 31-33 (A's row 129 didn't): in the zone layout those
+bytes are `$57F7-$57F9`.
+
+**Cause: a game record in the old gap between the buffers.** The game keeps
+a 16-byte record at XEGS `$47F7-$4806` (bank 15's unrolled copies at `$BA73`
+and `$BA7E`, zero page `$70-$7F` to and from it; they run in the Akuma
+cutscene, which no census run reached, so the census has no writes there).
+Its first byte is buffer B's last row's last byte; the other 15 are the gap
+between the buffers. The linker placed the buffers' bytes by the old
+straight mapping (`fbB` `$3000` → `$4000`), so the record went to
+`$57F7-$5806`, which in the zone layout is B's column 5 on page `$57`: row
+129's last 9 bytes.
+
+**Fix: the linker maps buffer addresses by the new layout**
+(`layout7800.fb_home`): a row byte goes where that row now is; the gaps the
+game uses go to free bytes (`XE_GAPS`: `$3000-$300F` stays at `$4000` as
+before; `$47F8-$4807` to `$4100`, right after `$40FF`, B row 152 byte 39,
+so the record stays in one piece; `$5FF0-$5FFF` to `$4200`).
+- **Split addresses into the buffers** (a low and a high byte relocated
+  apart) can't follow a layout that isn't one block. The linker now lists
+  them (`link7800.FB_RELOCS`): 8 places in each scene, all in code that no
+  longer runs (the game's buffer base after `$2D46`, `$2D66` and `$2D74`,
+  skipped by RowBase; the old buffer copy's setup, `$AD97-$ADC6`, replaced by
+  `SysCopyBuf`). The build stops if any other appears.
+
+**Checked:** the Akuma cutscene (the invincible, one-hit cartridge, the
+scripted player, frames 4,250-4,660): no coloured pixels on the floor in
+front of the door in any of its 379 hall frames (before: several stretches).
+- Regression (scenes 1-4, both buffers, every checkpoint): 0 bytes differ;
+  scene 0, 9,000 frames: no bad fetch.
+
+**Test cartridge:** `python port/kitopt.py invincible easy -o
+work/karateka7800-invincible-easy.a78` (the kit's options on this build, as
+`protoopt.py` did for the prototype): the player can't lose, one hit
+finishes any foe.
+
+### Performance against the stable build (2026-09-29)
+**Picture rate** (`probes/p7800-fliptimes.lua`: the frame of every buffer
+flip, the regression's scripted player, inputs keyed to pictures so both
+builds play the same game), pictures 300 to 800:
+
+| scene | stable, frames | zones, frames | zones against stable |
+|---|---|---|---|
+| 1 | 6,550 | 6,770 | 3.4% slower |
+| 2 | 6,403 | 6,588 | 2.9% slower |
+| 3 | 6,045 | 6,198 | 2.5% slower |
+| 4 | 3,500 | 3,500 | the same (paced by the game's waits) |
+
+The first 100 pictures come sooner (1,759 frames against 1,786: the
+engine's first part is no longer copied at each load). The attract
+sequence: 2.4% slower.
+
+**Why** (`probes/p7800-cycles.lua`, scene 1, pictures 300-800, executed
+cycles by the 6502's table):
+
+| | stable | zones |
+|---|---|---|
+| CPU cycles a frame (what MARIA's DMA leaves) | 21,569 | 21,973 (+1.9%) |
+| cycles a picture | 282,565 | 297,515 (+5.3%) |
+| of which: the row steps (`RowNext` and the rest) | — | 11,024 |
+| the fast fill | 6,285 | 10,257 |
+| the blitters (engine2) | 141,393 | 136,104 (their inline steps gone) |
+| RowBase | 1,850 | 2,398 |
+| the list builder | 686 | 262 |
+
+- **The zones save DMA:** MARIA reads a DLL entry per zone instead of per
+  line, so the CPU gets 1.9% more of each frame.
+- **The row steps cost more than that:** the game's step was 13 cycles
+  inline (`LDA/CLC/ADC #$28/STA/BCC`); now it is a call, about 25 (JSR,
+  DEC, the column-foot test, RTS), and the fast fill steps each row through
+  `FpStep` (a JSR and a loop). Net about 15,000 cycles a picture more,
+  3.3% slower.
+
+**What would win it back:** the common case of a row step is only "one
+page down, unless that was the column's foot":
+- in blitter A's step (11 bytes free): `DEC $15 / LDA $15 / CMP #$3F / BNE
+  / JSR wrap`, 13 cycles like the original, the call only at a column's foot
+  (1 row in 51);
+- the fast fill: the step inline in its patch blocks, and the pattern fill's
+  two-row step as two such steps;
+- the mirrored blitter (10 bytes: its step adds the shift's odd bit), the
+  story scroll: calls kept or folded likewise.
+Estimated: the row steps from 11,000 to about 2,000 cycles a picture and
+the fill back near 6,300, which with the DMA saving would put the zone
+build about 1% ahead of the stable one.
+
+### The row steps made fast (2026-09-29)
+Known-good checkpoint first: `../Karateka-Port-checkpoints/
+2026-09-29_KEEP_enh-goal1-zones` (source, cartridges, symbols).
+
+**What changed:**
+- **Blitter A's step** (`$295F`, 11 bytes): `DEC $15 / LDA $15 / CMP #$3F /
+  BNE / JSR SysRowWrap`, inline: 12 cycles in the common case (the game's
+  `ADC #$28` was 13), the call only at a column's foot (1 row in 51).
+- **The mirrored blitter's** (`$2B5A`, 10 bytes: too few for the inline
+  step and its shift's odd byte): still a call, but `RowNextC` now goes
+  straight to `RowNext` when the carry is clear, and adds the byte with
+  `INC` otherwise (no `PHP`/`PLP`).
+- **The story scroll's** (`$084B`, 23 bytes): both pointers' steps inline
+  (`SysRowWrapE0`, `SysRowWrapE2` at a column's foot).
+- **The fast fill:** two patch sequences, rows one apart (the rectangle)
+  and two apart (the pattern), with the step inline instead of `FpStep`'s
+  counted loop; `FpSeq` picks the sequence. The patch code moved to just
+  after the jump table so it stays in one page (`FpPatchLo` holds low
+  bytes). 353 bytes at `$2600`.
+
+**Result** (the regression's scripted player, pictures 300-800):
+
+| | stable | zones, first | zones, fast steps |
+|---|---|---|---|
+| scene 1 | 6,550 frames | 6,770 | 6,522 (0.4% faster than stable) |
+| scene 2 | 6,403 | 6,588 | 6,324 (1.2% faster) |
+| scene 3 | 6,045 | 6,198 | 5,976 (1.2% faster) |
+| scene 4 | 3,500 | 3,500 | 3,500 |
+| attract, picture 710 | frame 8,765 | 8,978 | 8,593 (2.0% faster) |
+
+Scene 1, cycles a picture: 286,304 (stable 282,565, the first zone build
+297,515); the row routines 5,876 (were 11,024), the fast fill 7,347 (were
+10,257; stable 6,285); the CPU gets 21,949 cycles a frame (stable
+21,569), so a picture takes fewer frames than on the stable build.
+
+**Scene 4 always 7 frames a picture:** not a wait the game sets (its
+picture hold at `$1A86`, the one scene hand-overs use, is never written
+there). A finished picture is shown at the next vertical blank, so a
+picture takes whole frames; in the scripted run (the player standing in
+the doorway) each takes between 6 and 7 frames' work on either build, so
+both round to 7: about 8.6 pictures a second, against 4.4-4.8 in scenes
+1-3, where pictures take 4 to 17 frames (7 the most common, 13-14 the mean).
+The zone build has 3.1% more CPU a frame there (24,435 cycles against
+23,701), which the rounding hides.
+
+**Checked:** the regression, 0 bytes differ at all 13 checkpoints; scene 0,
+9,000 frames, and the invincible/easy cartridge, 6,000 frames of play, no
+bad fetch.
+
+### Stray pixels by a fallen guard: an image read as code (2026-09-30)
+The user's report, with a recording on the invincible/easy cartridge
+(`test-karateka7800-invincible-easy-0929-2309.inp`, copied with its cart
+to `inp/`): stray pixels near a body that dropped, when chapter 3's third
+guard is defeated.
+
+- **Where:** frame 12,140 of the recording, the guard in the hat lying
+  under the right-hand door: an orange and a white pixel past his head on
+  the last row, and the row above it wrong at the same end (buffer rows
+  126-127, bytes 25-26). Steady, not a flicker: the same bytes in both
+  buffers, every picture he lies there.
+- **Not a stray write.** `probes/p7800-fbwatch.lua` (every framebuffer
+  writer by PC over the whole recording) and `probes/p7800-fbstray.lua`
+  (the same writers' writes anywhere else: none, once the reset's RAM
+  clear and stack pushes are left out) found nothing out of place;
+  `probes/p7800-boxwrites.lua` showed the fill clearing both bytes every
+  picture and the blitter (`$7B12`, engine2 = XEGS `$2B12`) writing them
+  back; `probes/p7800-blitsetup.lua` put it in the second of the body's three
+  blits: a mirrored 3-byte by 9-row image from `$BFC5` (XEGS scene 3
+  data `$7FC5`), rows 119-127.
+- **The image in the cartridge is wrong** (`probes/p7800-peekat.lua` with
+  `SRC=BFC5`): its last two rows are `A8 60 CE C6 00 CE`, the original's
+  `00 33 CE 00 00 CE`. The original's snapshot of the same pose
+  (`xe-01-easy.inp`, frame ~13,080, `probes/xe-snapplay.lua`) matches the
+  port pixel for pixel but for those two rows.
+- **Cause: the static trace read the image as code.** `xesource.ENTRIES`
+  has the dispatch chain `$7FD9` as an entry for every scene, and the fixed
+  bank's `JSR $7FD9` (`$BC5A`) leads there too, but only scene 0's data
+  bank (11) holds that routine (`$7FD9-$7FE6`: save X and Y, `JSR $AF66`,
+  restore, `JMP $780D`). The other data banks hold image bytes there; scene
+  3's decode as `INC $3300 / DEC $0000 / ...`, and the linker relocated the
+  "operands": `$3300`, a framebuffer address, through `fb_home` to `$60A8`
+  (the `A8 60`), and `$0000` through the zero-page map to `$00C6`. (Scenes
+  1, 2 and 6 decode to illegal opcodes there, which the trace drops; scene
+  4's to `AND #$27`, nothing to relocate.)
+- **The stable build has it too, smaller:** its bytes are `00 43 CE C6 00
+  CE` (`$3300` moved to `$4300` with the old buffer base), so one pixel
+  pair was wrong there; enh's framebuffer mapping made it two rows.
+- **Fix:** `xesource.static_code` drops the trace's claims on
+  `$7FD9-$7FE6` in a scene whose data bank doesn't hold scene 0's bytes
+  there. The build then differs from the last in exactly the three bytes,
+  and the image is the original's.
+
+**The same kind of mistake, searched for.** `probes/staticonly.py` lists
+every byte the linker changes inside an instruction only the static trace
+claims (never run in that scene) and whether another scene ran that
+address, with the same bytes or other ones; `probes/deadfall.py` lists the
+trace's code reached only by falling through a branch that always branches
+(`LDX #$1D / BPL`), with nothing jumping there. Of the latter, one more is
+data: **scene 4 `$1F00`**, after `LDX #$1D / BPL` at `$1EFC`, is the first
+bytes of a finale sprite read as `ORA $1403 / BRK`; its "operand" moved
+`$1F02` from `$14` to `$F7`. `xesource.NOT_CODE = {4: [(0x1F00,
+0x1F04)]}` keeps it data (one byte back to the original's). The other
+fall-throughs (`$0A0C`: `JSR $B603 / JMP $AE78` in every scene; scene 0
+`$7837`: `JSR $0862 / LDX #`) read as real code and are left alone. The
+census's read map (`.rd`) doesn't tell data from code: it has instruction
+fetches too, so every executed byte is "read".
+- **Dead end:** "ran in another scene with other bytes" doesn't mark data
+  either: the scenes hold different code at the same addresses (the
+  scene code and data banks), so `staticonly.py` lists hundreds of those.
+- `probes/scanwrites.py` missed every `STA.w` form (its pattern had no
+  `.w`), which is why its scan of engine1 found no writes; fixed, it finds
+  `$1193-$1196` only, the bytes carved to RAM. The live watch
+  (`p7800-fbwatch.lua`, the ROM copy `$F200-$F402`) saw no write either.
+
+**Checked:** the regression, 0 bytes differ at all 13 checkpoints; the
+user's recording replayed on the fixed invincible/easy cartridge (4 bytes
+different from the recording's) stays in sync to the ending, and the guard
+matches the original.
+
+### Princess music with Akuma's: not reproduced (2026-09-30)
+The user's report: in the last fight the princess music plays at the same
+time as Akuma's. On MAME, the same recording:
+- **One tune at a time.** `probes/p7800-tunelog.lua`: tune 23 (f14,621),
+  17 on entering Akuma's hall (f15,181), 16 as Akuma comes on (f15,709,
+  from scene 4's `$7B84`: `$39` reaching `$18`), 18 when he falls, 19 the
+  princess, 20 the ending. `probes/p7800-seqlog.lua` (the sequencer's
+  context, XEGS `$3000-$3007` at `$4000`): tune 17 ends at f15,515, before
+  16 starts, and the driver has one sequencer: a new tune replaces the
+  last (the port's `Sound` keeps that: swap in, set up, swap out).
+- **The same as before enh:** the stable-era recording `7800-04mf` plays
+  17, then 16 (f35,057-35,757), then 18. The original's `xe-01-easy`
+  run never shows Akuma fighting (easy mode's instant-death block), so it
+  plays 23, 17, 18, 19, 20 without 16 (`probes/xe-tunelog.lua`).
+- **The music data is the original's:** scene 4's streams `$2000-$21FF`
+  differ from the original only in the relocated header pointers, the same
+  in enh, stable and the recording's cartridge; `tunewalk.py`: 70 pointers,
+  0 wrong. Nothing writes engine1's ROM copy (so no lost music state).
+- **The driver runs at the original's rate:** `probes/p7800-pccount.lua`,
+  per frame: the step (`$24E3`) 2 and 3 times alternately, the voice copy 4
+  and 6, on the original, enh and stable alike; in the fight 7 NMIs and 6
+  DLIs every frame, none dropped.
+- **One writer of the TIA's sound registers,** `TiaSound`, once a frame
+  (`probes/p7800-tiawrites.lua`), following tune 16's two voices.
+- **How the TIA renders tune 16** (`probes/p7800-voicelog.lua`, octaves
+  ignored): notes within about ±25 cents but for some bass notes (152 Hz
+  -88, 136 Hz +112, 108 Hz +77 cents: the TIA's tones are sparse that low),
+  so 5 of the 28 note pairs have their interval off by 70-110 cents. That
+  is the conversion rule's (shared with stable), not a second tune.
+
+Not yet explained: what the user heard. The fight was silent before the
+music-pointer fix (above, "The silent Akuma fight"), so tune 16 may be new
+to the user's ears; open until the user says where in the fight and on
+what (MAME, hardware, the Pocket) it happens.
+
+**Where the user hears it:** from the moment the player enters the
+princess's room and Akuma pushes him back into his hall. That is tune 16's
+start (f15,709 in the recording): the tune the pointer bug silenced, heard
+for the first time since the fix (the user has reached it once). So the
+report is most likely tune 16 itself, not a second tune. To judge it by
+ear: `probes/p7800-shadowlog.lua` logs the POKEY shadow (what the original's
+driver writes) in `xe-pokey.log` form, and `port/sndconv.py` renders it as
+the original's POKEY (`work/analysis/rec-shadow/orig.wav`) and as the
+port's TIA (`tia+0.wav`, `SND_OFFSET` 0): frames 15,100-16,420, tune 17 at
+1.4-6.9 s, tune 16 from 10.2 s.
+
+## karateka-enh merged: the display lists by the rules in the stable port (2026-09-30)
+The user called goal 1 finished (display lists by the 7800's rules: the
+DLL and every DL in RAM, at most 512 bytes and one page crossing, 8/16-line
+zones, the static lists copied from ROM, engine1 in the fixed bank) and
+asked for it in the stable port, as the foundation for drawing with MARIA
+objects instead of a framebuffer (zones hold objects over many lines, so
+nothing has to be declared line by line).
+
+**The merge:** the stable side had not changed since the fork was copied
+from it (every file here dated 2026-09-27 or earlier), so the fork's
+`port/` (`build7800.py`, `layout7800.py`, `link7800.py`, `sys7800.asm`,
+`xesource.py`, `run7800.sh`, the new `kitopt.py`), its new and changed
+probes and this file came over whole, in this side's CRLF. One name
+clash: the fork had written a new probe over `p7800-blitlog.lua` (the
+draw-call log); the fork's is now `p7800-blitsetup.lua` and the old one is
+back on both sides.
+
+**Checked here:**
+- the build gives the fork's cartridge and symbol file byte for byte;
+- `regress.sh`: 13 comparisons byte for byte, fresh dumps;
+- the kit (`mkkit.py`) rebuilds the cartridge and every option set, and
+  its `make.py` run on `../karateka/Karateka.car` gives the same carts as
+  `kitopt.py` (base; invincible, easy; start-level3, invincible);
+- the option cartridges in `work/` rebuilt: invincible, invincible-easy,
+  level3-invincible. `karateka7800-cheat.a78` was left alone: it is from
+  an older build and its options aren't recorded.
+
+Checkpoint before the merge: `../Karateka-Port-checkpoints/2026-09-30_KEEP_before-enh-merge`
+(source, probes, this file, the cartridges, the kit), kept until this build
+proves itself on hardware.
+
+### Performance against the original (2026-09-30)
+The same scripted player (`playkey.lua`, `FIREFLAG=1 INJECT=1`, scenes
+2-4 by `SCENE`) on the XEGS, the stable cart before the merge (the
+checkpoint) and the merged build; pictures counted the same way on both
+machines (calls of the flip and wait, `$0862`/`$B60F`), `playkey.lua` now
+logging each counted flip's frame. Frames from picture 300 to 800
+(`work/analysis/perf.sh`; the regression shows the same pictures on all
+three, so the same play):
+
+| Scene | XEGS (MAME) | stable before | merged | merged vs MAME's XEGS |
+|---|---|---|---|---|
+| 1 | 5,834 | 6,613 | 6,573 | 12.7% slower (4.6 pictures a second against 5.1) |
+| 2 | 5,716 | 6,414 | 6,336 | 10.8% slower |
+| 3 | 5,498 | 6,087 | 6,019 | 9.5% slower |
+| 4 | 3,500 | 3,500 | 3,500 | the same (7 frames a picture) |
+
+(Scenes 2 and 3's scripted player dies before picture 800, so their
+windows end in scene 1, alike on all three.)
+
+**Why, scene 1** (`p7800-cycles.lua` over the same window): the port does
+less work a picture, about 288,600 executed cycles against the original's
+318,100 (9% less: the health cache, row address, column routine and fast
+fill), but its CPU gets about 21,950 cycles a frame against the XEGS's
+27,270: MARIA's DMA (the display lists and 40 bytes of graphics a line)
+halts the CPU for longer than ANTIC's does. 13.1 frames a picture against
+11.7.
+
+**But MAME's `xegs` is not a real XEGS** (the user; karateka-proto's
+FINDINGS, "CPU left per frame"): it charges almost none of ANTIC's DMA
+(a counting loop lost ~3% where ANTIC's rules give ~29%). For this screen
+(mode E, 153 lines, refresh on all 262) a real XEGS's ANTIC takes about
+8,700 cycles a frame, leaving about 21,200 of 29,870; in this probe's
+units (instruction table cycles, without page-crossing and branch extras,
+which MAME's 27,270 a frame is in) about 19,900. The work a picture, the
+wait loops taken out (`$B627`/`$B634` on the XEGS, `$D6F6`/`$D703` here),
+and the frames a picture that gives:
+
+| Scene | work a picture, XEGS | here | real XEGS, estimated | here, measured (MAME a7800) |
+|---|---|---|---|---|
+| 1 | 307,700 | 281,100 | 14.5-15.5 | 13.1 |
+| 2 | 300,600 | 275,100 | 14.2-15.1 | 12.7 |
+| 3 | 288,600 | 260,600 | 13.6-14.5 | 12.0 |
+| 4 | ~170,400 | ~152,600 | 8.0-8.6 of work, so 9 | 7 |
+
+So on hardware the port should be ahead of the original, about 10-17% in
+scenes 1-3 and 7 frames a picture against about 9 in scene 4, not behind
+as MAME's `xegs` shows. Estimates: the XEGS side assumes the same ANTIC
+cost in every scene (the same bitmap), and the 7800 side is MAME's MARIA
+model (karateka-proto found it within 6-9% of the MARIA rules). Altirra
+(cycle-exact) or hardware would settle both.
+
+**Scene 4 is capped by rounding, confirmed on the original (MAME):** the XEGS
+waits for the vertical blank 3,175 of its 27,523 cycles a frame
+(`$B627`), the picture hold (`$B634`) never runs, so a picture is about
+6.2 frames of work and shows at the 7th; the port's is about 6.3 (152,600
+cycles at 24,110 a frame, the flip routine's wait taken out), also the 7th.
+So the port's scene 4 is the original's speed, and a picture 10% lighter
+would not change it on either machine.

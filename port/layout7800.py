@@ -31,10 +31,16 @@ never changes. Exceptions, which carry their own mapping:
 """
 
 # ---------------------------------------------------------------- regions
+# the engine's first part is read-only (the census: the original writes only
+# its save slot $1193-$1196, carved out below), so it lives in the fixed
+# bank, freeing cart RAM $7000-$7202 for the framebuffers (FINDINGS
+# "display lists by the 7800's rules")
+ENGINE1_AT = 0xF200   # a whole-page move: split address constants relocate only their high byte
+
 REGIONS = [   # name, XEGS start, end (exclusive), 7800 start, where
     ("sprites", 0x0480, 0x06E8, 0x1B80, "ram"),
     ("common", 0x06E8, 0x1000, 0x96E8, "page"),
-    ("engine1", 0x1000, 0x1203, 0x7000, "cram"),
+    ("engine1", 0x1000, 0x1203, ENGINE1_AT, "fixed"),   # read-only once loaded: ROM
     ("scode", 0x1203, 0x2300, 0x8203, "page"),
     ("engine2", 0x2300, 0x3000, 0x7300, "cram"),
     ("fbB", 0x3000, 0x4800, 0x4000, "cram"),
@@ -52,6 +58,10 @@ FIXED_BANK = 7
 # ------------------------------------------------------------ carve-outs
 # bytes the game writes inside ROM-resident regions (census, all runs):
 # (XEGS start, end exclusive) -> RAM start; blocks keep their internal layout
+# the engine's first part: its save slot ($1169 saves $14/$15 and $03/$04
+# there, $117E restores them), written before it is read; not copied at load
+CARVE_ENGINE1 = [(0x1193, 0x1197, 0x184E)]
+
 CARVE_COMMON = [
     (0x0880, 0x0900, 0x1880),      # the zero-page swap buffer (moved from $1A00
                                    # so page $19 and $1A00-$1A08 hold scene 1's
@@ -213,6 +223,8 @@ SYSVARS = [                       # name, size
     ("S_PEND", 1),                # a list chosen but not yet shown
     ("S_PDPPL", 1), ("S_PDPPH", 1), ("S_PCTRL", 1), ("S_PVBI", 1), ("S_PM8", 1), ("S_PIDX", 1),
     ("S_INVBI", 1),               # the vertical blank is running (it never nests)
+    ("S_DLSP", 2), ("S_SLOT", 1), ("S_H", 1), ("S_HASDLI", 1), ("S_RROW", 1),
+    ("S_CPL", 1), ("S_CPH", 1),   # the zone builder, the rows, the column routine
     ("S_BTMP", 2),                # the list builder's scratch
     ("S_INDLI", 1),               # the game's DLI handler is running
     ("S_M8B", 1), ("S_M8Y", 1),   # Mode8's scratch
@@ -260,8 +272,44 @@ def sysvars():
 
 
 MODE8_ROWS = 0x1F00               # 3 rows x 40 bytes, expanded each frame
-DLL_A = 0x2200                    # display list lists, one per framebuffer
-DLL_B = 0x24E0
+DLL_A = 0x2200                    # display list lists, one per framebuffer (a page each:
+DLL_B = 0x2300                    # MARIA reads one across at most one page boundary)
+DLS_A = 0x2400                    # the display lists of each buffer's row zones
+DLS_B = 0x2500
+SMALLDL_AT = 0x2780               # the empty and mode-8 row lists and the blank DLL
+
+# the framebuffers for MARIA's multi-line zones: pages FB_PBOT-FB_PTOP, six
+# 40-byte rows a page at bytes 16-255; buffer A columns 0-2, B 3-5, each
+# column FB_BAND rows, the row below one page lower (FINDINGS "display lists
+# by the 7800's rules")
+FB_PTOP, FB_PBOT, FB_BAND = 0x72, 0x40, 51
+FB_ROWS = 153
+XE_ROW0 = (0x4808, 0x3010)          # the XEGS buffers' row 0: A, B (40 bytes a row)
+# the XEGS bytes around the rows (not shown) that the game uses: $47F8-$4807
+# holds the end of the 16-byte record at $47F7 (bank 15's copies at $BA73,
+# $BA7E; its first byte is B's last row's last byte), $3000-$300F is written
+# at load; the rest is spare. Their 7800 homes: $3000 as before (the
+# cartridge's POKEY), the others in pages' free first 16 bytes, $47F8 at
+# $4100 so the record stays in one piece after $40FF (B row 152 byte 39)
+XE_GAPS = [(0x3000, 0x3010, 0x4000), (0x47F8, 0x4808, 0x4100), (0x5FF0, 0x6000, 0x4200)]
+
+
+def fb_row(buf, r):
+    """buffer 0 (A) or 1 (B), row r: its first byte"""
+    col = 3 * buf + r // FB_BAND
+    return (FB_PTOP - r % FB_BAND) * 256 + 16 + 40 * col
+
+
+def fb_home(a):
+    """an XEGS framebuffer address ($3000-$5FFF): its 7800 home"""
+    for buf in (0, 1):
+        off = a - XE_ROW0[buf]
+        if 0 <= off < FB_ROWS * 40:
+            return fb_row(buf, off // 40) + off % 40
+    for lo, hi, new in XE_GAPS:
+        if lo <= a < hi:
+            return new + (a - lo)
+    raise ValueError("$%04X: not in a framebuffer" % a)
 
 # hardware and OS symbols, as xesource.py names them -> 7800 address
 def hw_map(sv):
@@ -361,8 +409,21 @@ def replacements(scene=None):
         # count, then the passes. The pattern: to the RAM code, and here the
         # 4-row store block it patches (at $2D19; the BPL's operand is set
         # for each block). FINDINGS "The fast fill"
-        0x2CE0: (0x2CFB, pad(["    LDA Z_02", "    STA FL_VAL", "    LDA #40", "    STA FL_STRIDE",
+        0x2CE0: (0x2CFB, pad(["    LDA Z_02", "    STA FL_VAL", "    LDA #1", "    STA FL_STRIDE",
                               "    LDA Z_0D", "    STA FL_COUNT", "    JSR RfPass", "    JMP L_2CFB"], 21, 27)),
+        # the framebuffers' rows are one page apart (FINDINGS "display lists by
+        # the 7800's rules"): the game's steps to the next row
+        # (the common case inline, 13 cycles as the game's ADC; the call only
+        # at a column's foot, 1 row in 51: FINDINGS "Performance")
+        0x295F: (0x296A, ["    DEC Z_15", "    LDA Z_15", "    CMP #$3F", "    BNE RowStepA",
+                          "    JSR SysRowWrap", "RowStepA:"]),     # blitter A
+        0x2B5A: (0x2B64, pad(["    JSR SysRowNextC"], 3, 10)),      # the mirrored blitter
+        0x0830: (0x083D, pad(["    JSR SysRowNextS"], 3, 13)),      # the story scroll
+        0x084B: (0x0862, ["    DEC Z_E1", "    LDA Z_E1", "    CMP #$3F", "    BNE StoryStepB",
+                          "    JSR SysRowWrapE0", "StoryStepB:", "    DEC Z_E3", "    LDA Z_E3",
+                          "    CMP #$3F", "    BNE StoryStepC", "    JSR SysRowWrapE2", "StoryStepC:",
+                          "    RTS"]),
+        0xAD83: (0xAD89, ["    JSR SysCopyBuf"]),                   # the buffer copy
         0x2D16: (0x2D3E, pad(["    JMP RfPattern"] + ["    STA $FFFF,X"] * 4 +
                              ["    DEX", "    .byte $10,$F1", "    RTS"], 19, 40)),
         # speed (enhancement): the row times 40. The game's $2D78 is a
@@ -392,7 +453,7 @@ def replacements(scene=None):
         # routine, starts with JSR $B60F)
         0xB60F: (0xB612, ["    JSR ScStFlipL"]),
         0xAD80: (0xAD83, ["    JSR ScStCopy"]),
-        0x280F: (0x2813, ["    JSR SysStClr", "    NOP"]),
+        0x280F: (0x284E, pad(["    JSR SysStClr", "    JMP SysClearBuf"], 6, 63)),
         # the game's DLI handler ($1026) ends PLA/TAY/PLA/TAX/PLA/RTI; the
         # port enters it straight from the NMI (no second interrupt frame) and
         # takes it out through DliExit, which does the NMI's end-of-DLI work

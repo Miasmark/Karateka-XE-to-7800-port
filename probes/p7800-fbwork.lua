@@ -31,7 +31,7 @@ local function report()
   local t = {}
   for pc, n in pairs(bypc) do t[#t + 1] = {pc, n} end
   table.sort(t, function(x, y) return x[2] > y[2] end)
-  for i = 1, math.min(12, #t) do
+  for i = 1, math.min(40, #t) do
     o:write(string.format("  PC %04X: %d writes, %.0f per flip\n", t[i][1], t[i][2], t[i][2] / math.max(flips, 1)))
   end
   o:close()

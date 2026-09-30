@@ -102,6 +102,38 @@ class Image(object):
 
 
 # ------------------------------------------------------- display lists
+FB_PTOP, FB_PBOT, FB_BAND = L.FB_PTOP, L.FB_PBOT, L.FB_BAND
+DL_W = (PAL << 5) | ((-20) & 0x1F)      # a 20-byte object in the bitmap's palette
+fb_row = L.fb_row
+
+
+def zones(d):
+    """(DLL entries, row-zone display lists) the zone builder makes for a
+    run list, as sys7800.asm BuildDll does"""
+    entries = dls = lines = 0
+    for i in range(0, len(d) - 1, 3):
+        k, n, arg = d[i], d[i + 1], d[i + 2]
+        flag = 1 if k & 0x80 else 0
+        n -= flag
+        if k & 0x7F == 0:
+            entries += (n + 15) // 16 + flag
+        elif k & 0x7F == 1:
+            entries += n + flag
+        else:
+            r = arg
+            while n:
+                h = min(16, n, FB_BAND - r % FB_BAND)
+                entries += 1
+                dls += 1
+                r += h
+                n -= h
+            entries += flag
+            dls += flag
+        lines += d[i + 1]
+    entries += (VBI_LINE - lines + 15) // 16 + 1 + (DLL_LINES - VBI_LINE - 1 + 15) // 16
+    return entries, dls
+
+
 def row_dl(base, r):
     a = base + 40 * r
     b = a + 20
@@ -206,9 +238,77 @@ def describe(mem, at):
     return bytes(out), buf, modef, m8
 
 
+# The game's DLI handler ($1026, engine1) works by its count in the frame:
+# the third and sixth DLIs set the colours ($25-$28; the sixth blacks out the
+# status bar's), the other four run the music driver, and on a tick that takes
+# about 11 lines in MAME. The port runs one DLI at a time (they share save
+# bytes), so where a music DLI comes just above a colour one (scene 0's
+# lists: 3 lines; the others: 13), a long tick held the colours back past the
+# line they are for: the floor's pixels in the first status row showed in the
+# floor's grey, every fourth frame (FINDINGS "Late colours"). The music DLIs
+# change nothing on screen, so each one closer than DLI_GAP lines above a
+# colour DLI is moved up to DLI_GAP lines above it, or just below the DLI
+# before it (its run split there); the colour DLIs stay on the game's lines.
+# 28 lines: about midway between its neighbours in every list, with room for
+# hardware that runs the handler slower than MAME.
+COLOUR_DLIS = (2, 5)
+DLI_GAP = 28
+
+
+def space_dlis(d):
+    runs = [list(d[i:i + 3]) for i in range(0, len(d) - 1, 3)]
+    for _ in range(2):
+        # the line each run ends on, and the DLIs in order
+        ends, line = [], 0
+        for r in runs:
+            line += r[1]
+            ends.append(line - 1)
+        dlis = [i for i, r in enumerate(runs) if r[0] & 0x80]
+        for k, ri in enumerate(dlis):
+            if k + 1 not in COLOUR_DLIS or k + 1 >= len(dlis):
+                continue
+            nxt = ends[dlis[k + 1]]
+            want = nxt - DLI_GAP
+            prev = ends[dlis[k - 1]] if k else -1
+            want = max(want, prev + 1)
+            if ends[ri] <= want:
+                continue
+            # split the run holding line `want` after it: the DLI goes on its first part
+            start = 0
+            for j, r in enumerate(runs):
+                if start <= want < start + r[1]:
+                    break
+                start += r[1]
+            r = runs[j]
+            first = want - start + 1
+            kind = r[0] & 0x7F
+            arg2 = r[2] + first if kind == 2 else r[2]
+            head = [kind | 0x80, first, r[2]]
+            tail = [kind, r[1] - first, arg2]
+            runs[ri][0] &= 0x7F                 # the DLI leaves its old line
+            if j == ri:
+                tail[0] = kind                  # (the run that had it)
+            runs[j:j + 1] = [head] + ([tail] if tail[1] else [])
+            break                               # positions moved: again from the top
+    out = bytearray()
+    for r in runs:
+        out += bytes(r)
+    out.append(0xFF)
+    return bytes(out)
+
+
 # ------------------------------------------------------------------ build
 def build(out_path):
     link = K.link(verbose=False)
+    # an address into the framebuffers split in two bytes can't follow them
+    # (they are no longer one block): only in code that no longer runs (the
+    # buffer base $2D56 adds, skipped by RowBase; the buffer copy's setup at
+    # $ADC7, replaced by SysCopyBuf)
+    dead = {0x2D66, 0x2D74, 0xAD97, 0xAD9F, 0xADAA, 0xADB3, 0xADBB, 0xADC6}
+    live = sorted(x for x in K.FB_RELOCS if x[1] not in dead)
+    if live:
+        raise SystemExit("split addresses into the framebuffers: " + ", ".join(
+            "scene %d $%04X -> $%04X" % (sc, loc, t) for sc, loc, t, nt in live))
     zp = link["zp"]
     sv = L.sysvars()
     res1 = link["scenes"][1]["resolver"]
@@ -238,12 +338,6 @@ def build(out_path):
         banks[L.ART_BANK].place(lo + d, bytes(mem[scenes[0]][a] for a in range(lo, hi)),
                                 "art-bank sprite copy $%04X" % lo)
 
-    # --- the display lists: one per framebuffer row, per buffer
-    dls = bytearray()
-    for base in (FBA_BASE, FBB_BASE):
-        for r in range(ROWS):
-            dls += row_dl(base, r)
-
     # --- per-scene pages
     xdl = shared_display_lists(xe_display_lists(), mem)
     for s in L.SCENES:
@@ -269,12 +363,18 @@ def build(out_path):
         entries, desc = [], bytearray()
         for at in sorted(xdl.get(s, ())):
             d, buf, modef, m8 = describe(mem[s], at)
+            if not os.environ.get("NO_DLI_SPACE"):     # (for comparison: the game's DLI lines as they are)
+                d = space_dlis(d)
             line, last_dli = 0, -1
             for i in range(0, len(d) - 1, 3):
                 line += d[i + 1]
                 if d[i] & 0x80:
                     last_dli = line - 1
             ndli = sum(1 for i in range(0, len(d) - 1, 3) if d[i] & 0x80)
+            ne, nz = zones(d)
+            if ne > 85 or nz > 25:      # a DLL in its page (L.DLL_A/B), the zones' lists in theirs
+                raise SystemExit("scene %d list $%04X: %d DLL entries, %d row zones; the pages hold 85 and 25"
+                                 % (s, at, ne, nz))
             if ndli != GAME_DLIS:
                 raise SystemExit("scene %d list $%04X has %d DLIs; the NMI count assumes %d"
                                  % (s, at, ndli, GAME_DLIS))
@@ -322,7 +422,8 @@ def build(out_path):
     art = banks[L.ART_BANK]
     org, data = link["shared"]["art"]
     art.place(org, data, "art")
-    art.place(IMG["IMG_ENGINE1"], link["shared"]["engine1"][1], "engine image 1")
+    org1, e1 = link["shared"]["engine1"]
+    fixed.place(org1, e1, "engine part 1 (read-only)")
     e2 = bytearray(link["scenes"][0]["chunks"]["engine2"][1])
     art.place(IMG["IMG_ENGINE2"], bytes(e2), "engine image 2")
     # the small-sprite block's image, plus the 14 bytes after it: the story
@@ -363,9 +464,12 @@ def build(out_path):
         "FB_ROWS": ROWS, "CLIPROW": sv["S_CLIPROW"] + 1,   # +1: blitter B starts a byte early
         "ART_BANK": L.ART_BANK, "DLL_A": L.DLL_A, "DLL_B": L.DLL_B, "DLL_LINES": DLL_LINES, "VBI_LINE": VBI_LINE, "VBI_NMI": GAME_DLIS + 1,
         "VBI_SPIN": VBI_SPIN,
-        "MODE8_ROWS": L.MODE8_ROWS, "FBA_ROW0": FBA_BASE, "FBB_ROW0": FBB_BASE,
+        "MODE8_ROWS": L.MODE8_ROWS, "FBA_ROW0": fb_row(0, 0), "FBB_ROW0": fb_row(1, 0),
+        "FB_PTOP": FB_PTOP, "FB_PBOT": FB_PBOT, "FB_BAND": FB_BAND, "DL_W": DL_W,
+        "DLS_A": L.DLS_A, "DLS_B": L.DLS_B, "SMALLDL_AT": L.SMALLDL_AT,
+        "G_Z03": zp[0x03], "G_ZE0": zp[0xE0], "G_ZE2": zp[0xE2],
+        "J_ROWNEXT": K.sys_symbols()["SysRowNext"], "J_ROWADDR": K.sys_symbols()["SysRowAddr"],   # for the pieces assembled apart
         "SP_PAGEMAP": L.SP_PAGEMAP, "RAM_SPRITES": 0x1B80, "LEN_SPRITES": SPRITE_TAIL[1] - 0x0480,
-        "RAM_ENGINE1": 0x7000, "LEN_ENGINE1": 0x1203 - 0x1000,
         "RAM_ENGINE2": 0x7300, "LEN_ENGINE2": 0x3000 - 0x2300, "RAM_ENGINE7": 0x74A5,
         "SWAPBUF": L.CARVE_COMMON[0][2],
     })
@@ -398,19 +502,18 @@ def build(out_path):
     eq.update({"CCARVE": at, "SCENEBANK_TAB": at + len(ccarve)})
     for s in L.SCENES:
         banks[L.SCENE_BANK[s]].place(at, bytes(ccarve) + sbt, "loader tables")
-    # the empty DL and the three mode-8 row DLs: in the gap between sprite
-    # copies at $F8B3-$F8FF (the system block has no room to spare)
+    # the empty DL, the three mode-8 row DLs and the blank DLL: display lists
+    # must be in RAM, so these static ones are copied at boot from an image in
+    # the fixed bank to console RAM SMALLDL_AT (sys7800 Reset)
     small = bytes([0, 0]) + b"".join(bytes(row_dl(L.MODE8_ROWS, k)) for k in range(3))
-    eq.update({"DL_EMPTY": SMALL_DLS, "DL_M8": SMALL_DLS + 2})
-    fixed.place(SMALL_DLS, small, "empty and mode-8 row DLs")
-    # Mode8's tables, after them: a nibble's two 2-bit pixels, each widened
-    # to a whole 160A byte (M8NIB_HI the left pixel, M8NIB_LO the right)
+    eq.update({"DL_EMPTY": L.SMALLDL_AT, "DL_M8": L.SMALLDL_AT + 2, "BLANK_DLL": L.SMALLDL_AT + len(small)})
+    # Mode8's tables, in ROM: a nibble's two 2-bit pixels, each widened to a
+    # whole 160A byte (M8NIB_HI the left pixel, M8NIB_LO the right)
     widen = [0x00, 0x55, 0xAA, 0xFF]
     nib = bytes(widen[n >> 2] for n in range(16)) + bytes(widen[n & 3] for n in range(16))
-    at = SMALL_DLS + len(small)
-    eq.update({"M8NIB_HI": at, "M8NIB_LO": at + 16})
-    fixed.place(at, nib, "mode-8 widening tables")
-    # the blank list, in ROM: the six dummy DLIs and VBI_LINE as one-line zones
+    eq.update({"M8NIB_HI": SMALL_DLS, "M8NIB_LO": SMALL_DLS + 16})
+    fixed.place(SMALL_DLS, nib, "mode-8 widening tables")
+    # the blank list: the six dummy DLIs and VBI_LINE as one-line zones
     # (MARIA raises a zone's DLI as the zone starts, so a flagged zone must be
     # exactly the flagged line, as in the game lists), the lines between them in
     # unflagged zones of up to 16 lines; so it has the game lists' seven NMIs,
@@ -425,11 +528,11 @@ def build(out_path):
             h, dli = min(16, nxt - line), 0
         dll += bytes([dli | (h - 1), eq["DL_EMPTY"] >> 8, eq["DL_EMPTY"] & 0xFF])
         line += h
-    where = fixed.find(len(dll), 0xF500, SIG_START)
-    if where is None:
-        raise SystemExit("fixed: no room for the blank list (%d bytes)" % len(dll))
-    fixed.place(where, bytes(dll), "blank list")
-    eq["BLANK_DLL"] = where
+    image = small + bytes(dll)
+    if L.SMALLDL_AT + len(image) > 0x2800:
+        raise SystemExit("the static display lists run past console RAM ($%04X + %d)" % (L.SMALLDL_AT, len(image)))
+    eq["LEN_SMALLDL"] = len(image)       # the image: in the system block (IMG_SMALLDL, its tables)
+    small_image = image
     # the POKEY-to-TIA sound tables (port/sndconv.py, SND_OFFSET), in free
     # gaps among the sprite copies (above $F500, clear of the system block)
     import sndconv
@@ -442,7 +545,9 @@ def build(out_path):
             raise SystemExit("fixed: no room for %s (%d bytes)" % (name, len(blob)))
         fixed.place(where, blob, name)
         eq[name] = where
-    tables = ["DLA_BASE:"] + by(list(dls[:ROWS * 10])) + ["DLB_BASE:"] + by(list(dls[ROWS * 10:]))
+    # (the row lists were in ROM; now each zone's is built in RAM, and the
+    # static ones are copied there at boot from this image)
+    tables = ["IMG_SMALLDL:"] + by(list(small_image))
 
     # each piece after a ";;; FAR" line goes in a free gap of its own:
     # assembled once to learn its size, placed, and its labels handed to the
@@ -477,8 +582,9 @@ def build(out_path):
         a = asm.Assembler()
         return a.assemble(lines), a.sym
     rf_code, rf_sym = assemble_at(rf_text, K.RAMFILL_TABLE, {})
-    if K.RAMFILL_TABLE + len(rf_code) > 0x7300:
-        raise SystemExit("the fast fill's code (%d bytes) runs into the engine at $7300" % len(rf_code))
+    if K.RAMFILL_TABLE + len(rf_code) > L.SMALLDL_AT:
+        raise SystemExit("the fast fill's code (%d bytes) runs into the static display lists at $%04X"
+                         % (len(rf_code), L.SMALLDL_AT))
     for i, name in enumerate(K.RAMFILL_ENTRIES):
         if rf_sym[name] != K.RAMFILL_TABLE + 3 * i:
             raise SystemExit("fast fill jump table: %s at $%04X" % (name, rf_sym[name]))
@@ -580,7 +686,7 @@ def build(out_path):
     far_eq = {k: v for k, v in sp_sym.items() if k in sp_names}     # the scene page's labels too
     far_sym = dict(far_eq)
     far_sym.update(l1_sym)                     # for the symbol file (the probes)
-    far_sym.update({k: v for k, v in rf_sym.items() if 0x7203 <= v < 0x7300 and k not in eq})   # the fast fill's labels
+    far_sym.update({k: v for k, v in rf_sym.items() if K.RAMFILL_TABLE <= v < K.RAMFILL_TABLE + len(rf_code) and k not in eq})   # the fast fill's labels
     for size, text in sorted(sized, key=lambda st: -st[0]):
         at = fixed.find(size, 0xF500, SIG_START)
         if at is None:
@@ -643,8 +749,8 @@ def build(out_path):
     with open(out_path, "wb") as f:
         f.write(bytes(hdr) + rom)
     used = lambda img: sum(img.used)
-    print("fixed bank: %d of %d bytes used; system code $%04X-$%04X; DLs $%04X-$%04X"
-          % (used(fixed), BANK, K.SYS_TABLE, K.SYS_TABLE + len(code) - 1, sym["DLA_BASE"], sym["DLA_BASE"] + len(dls) - 1))
+    print("fixed bank: %d of %d bytes used; system code $%04X-$%04X"
+          % (used(fixed), BANK, K.SYS_TABLE, K.SYS_TABLE + len(code) - 1))
     for b in range(7):
         print("bank %d: %d bytes used" % (b, used(banks[b])))
     print("wrote %s (%d bytes)" % (out_path, len(hdr) + len(rom)))

@@ -31,7 +31,9 @@ CAR = os.path.join(HERE, "..", "..", "karateka", "Karateka.car")
 ROOT = os.path.join(HERE, "..", "work", "analysis")
 SYS_ENTRIES = ["SysZpSwap", "SysZpClear", "SysLoadCommon", "SysLoadScene", "SysWaitLine200",
                "SysReadStick", "SysBlitBank", "SysBlitDone", "SysSetVBV", "SysOsStub", "SysCommonTail", "SysSound", "SysSetDlist",
-               "SysRowBase", "SysDliExit", "SysStClr"]
+               "SysRowBase", "SysDliExit", "SysStClr", "SysRowNext", "SysRowNextC", "SysRowNextE",
+               "SysRowNextS", "SysClearBuf", "SysCopyBuf", "SysRowAddr", "SysRowWrap", "SysRowWrapE0",
+               "SysRowWrapE2"]
 SYS_TABLE = 0xE0DA            # a jump table, so the game can be linked before the system
                               # (just after bank 15, which ends at $E221)
 
@@ -46,7 +48,7 @@ SCENEPAGE_TABLE = 0x9420
 # the fast fill's code in cart RAM ($7203-$72FF, free between the engine's
 # two parts; copied there at load): its jump table
 RAMFILL_ENTRIES = ["RfPass", "RfPattern"]
-RAMFILL_TABLE = 0x7203
+RAMFILL_TABLE = 0x2600         # console RAM, beside the display lists
 
 
 def sys_symbols():
@@ -76,7 +78,7 @@ class Resolver(object):
         self.hw = L.hw_map(self.sv)
         self.sys = sys_symbols()
         self.bank15 = bank15 or {}
-        self.carve = list(L.CARVE_COMMON) + list(L.CARVE_SDATA.get(scene, []))
+        self.carve = list(L.CARVE_COMMON) + list(L.CARVE_ENGINE1) + list(L.CARVE_SDATA.get(scene, []))
         self.copies = [(lo, hi, d) for lo, hi, d, sc in L.SPRITE_COPIES + L.ART_COPIES if scene in sc]
 
     def new_addr(self, a):
@@ -93,6 +95,8 @@ class Resolver(object):
         for lo, hi, d in self.copies:
             if lo <= a < hi:
                 return a + d
+        if 0x3000 <= a < 0x6000:
+            return L.fb_home(a)             # the framebuffers, as MARIA's zones read them
         for name, lo, hi, new, where in L.REGIONS:
             if lo <= a < hi:
                 if name == "bank15":
@@ -132,6 +136,10 @@ class Resolver(object):
         if t >= 0xC000:
             return v          # into the XEGS OS: the disabled checksums, the $25C0 bug
         nt = self.new_addr(t)
+        if 0x3000 <= t < 0x6000 and (nt & 0xFF) != (t & 0xFF):
+            # the framebuffers are not one block any more: a byte of an address
+            # into them can only move with its high byte if the low one stays
+            FB_RELOCS.add((self.s, loc, t, nt))
         if shared_location(loc):
             # a pointer stored in a shared chunk (bank 15's tables at $B827 and
             # $BE6E) cannot differ by scene; into a scene-code sprite it always
@@ -141,6 +149,9 @@ class Resolver(object):
                 if lo <= t < hi:
                     nt = t + d
         return (v + ((nt >> 8) - (t >> 8))) & 0xFF
+
+
+FB_RELOCS = set()     # (scene, where, XEGS target, 7800 target): see reloc_value
 
 
 def shared_location(a):

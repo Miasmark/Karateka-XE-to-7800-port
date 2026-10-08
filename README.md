@@ -44,8 +44,10 @@ After a build, `port/kitopt.py` writes variants of the cartridge with options
 applied and the ROM re-signed:
 
 ```
-python port/kitopt.py invincible easy -o karateka7800-invincible-easy.a78
+python port/kitopt.py invincible easy --cart karateka7800.a78 -o karateka7800-invincible-easy.a78
 ```
+
+(`--cart` is the cartridge the build wrote; without it, `work/karateka7800.a78`.)
 
 The options are `invincible`, `easy`, `start-level2` and `start-level3`.
 

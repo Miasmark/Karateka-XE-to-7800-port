@@ -18,9 +18,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("options", nargs="+")
     ap.add_argument("-o", "--out", required=True)
+    ap.add_argument("--cart", help="the built cartridge (default work/karateka7800.a78; "
+                    "its patch sites are always the last build's, work/karateka7800.sites.json)")
     a = ap.parse_args()
     work = os.path.join(HERE, "..", "work")
-    cart = bytearray(open(os.path.join(work, "karateka7800.a78"), "rb").read())
+    cart = bytearray(open(a.cart or os.path.join(work, "karateka7800.a78"), "rb").read())
     head, body = cart[:128], cart[128:]
     sites = json.load(open(os.path.join(work, "karateka7800.sites.json")))
     opts = {o["id"]: o for o in mkkit.OPTIONS}

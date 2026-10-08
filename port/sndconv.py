@@ -26,6 +26,7 @@ import sys
 import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# (the WAVs only: the build's tables don't use the toolkit)
 sys.path.insert(0, os.path.join(HERE, "..", "..", "a7800-toolkit-local", "tools"))
 import tracker as T  # noqa: E402
 
@@ -66,12 +67,17 @@ def pokey_pitch(n):
     return POKEY_CLOCK / (2 * (n + 7))
 
 
-# TIA pitch from the toolkit's model (tracker.py; corrected 2026-09-25 -- it had
-# AUDC C and 6 an octave low, FINDINGS "TIA sound").
+# TIA pitch: the clock over (AUDF + 1) and the waveform's period in divider
+# ticks, as measured on MAME (the toolkit's tracker.py after its 2026-09-25
+# correction -- it had AUDC C and 6 an octave low, FINDINGS "TIA sound"; the
+# public toolkit doesn't carry it yet, so the build keeps its own copy of the
+# three tone modes and the clock)
+TIA_CLOCK = 31400.0                     # NTSC
+TIA_PERIOD = {0x4: 2, 0xC: 6, 0x6: 31}
 
 
 def tia_pitch(audc, audf):
-    return T.frequency(audc, audf)
+    return TIA_CLOCK / ((audf + 1) * TIA_PERIOD[audc])
 
 
 def tia_tones():
@@ -98,7 +104,7 @@ def noise_audf(n):
     if k >= 28:
         return 31
     rate = POKEY_CLOCK / (k * 64 + 32 + 7)
-    return max(0, min(31, int(round(T.CLOCK["ntsc"] / rate - 1))))
+    return max(0, min(31, int(round(TIA_CLOCK / rate - 1))))
 
 
 def tables(offset):

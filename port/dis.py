@@ -7,10 +7,18 @@ $0480, art (bank 14) at $8000, bank 15 at $A000."""
 import os
 import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.environ.get("A7800_TOOLKIT", os.path.join(HERE, "..", "..", "a7800-toolkit", "tools")))
+sys.path.insert(0, os.environ.get("A7800_TOOLKIT",
+                                  (os.path.join(HERE, "..", "a7800-toolkit", "tools")
+                                   if os.path.isdir(os.path.join(HERE, "..", "a7800-toolkit", "tools"))
+                                   else os.path.join(HERE, "..", "..", "a7800-toolkit", "tools"))))
 import m6502  # noqa: E402
 
-CAR = os.environ.get("KARATEKA_CAR", os.path.join(HERE, "..", "..", "karateka", "Karateka.car"))
+# the original cartridge: KARATEKA_CAR, else Karateka.car in the repository,
+# else ../karateka/Karateka.car beside it (build7800.py --car sets it too)
+CAR = os.environ.get("KARATEKA_CAR",
+                     os.path.join(HERE, "..", "Karateka.car")
+                     if os.path.exists(os.path.join(HERE, "..", "Karateka.car"))
+                     else os.path.join(HERE, "..", "..", "karateka", "Karateka.car"))
 CODE = {0: 13, 1: 7, 2: 1, 3: 5, 4: 3, 5: 13, 6: 9}
 DATA = {0: 11, 1: 8, 2: 2, 3: 6, 4: 4, 5: 11, 6: 10}
 

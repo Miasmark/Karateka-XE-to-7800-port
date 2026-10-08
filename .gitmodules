@@ -1,0 +1,3 @@
+[submodule "a7800-toolkit"]
+	path = a7800-toolkit
+	url = https://github.com/Miasmark/a7800-toolkit.git

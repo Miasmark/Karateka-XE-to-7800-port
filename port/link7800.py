@@ -26,9 +26,17 @@ sys.path.insert(0, HERE)
 import xesource as X          # noqa: E402
 import layout7800 as L        # noqa: E402
 import asm                    # noqa: E402  (the toolkit's, via xesource's path)
+import dis as D               # noqa: E402
 
-CAR = os.path.join(HERE, "..", "..", "karateka", "Karateka.car")
+CAR = D.CAR                   # the original cartridge (dis.py: KARATEKA_CAR, ...)
 ROOT = os.path.join(HERE, "..", "work", "analysis")
+# what the build takes from the census (README "Census data"): the
+# repository's census/, else the analysis folder's (port/mkcensus.py makes
+# the first from the second)
+CENSUS = (os.path.join(HERE, "..", "census") if os.path.isdir(os.path.join(HERE, "..", "census"))
+          else os.path.join(ROOT, "census"))
+RELOC = (os.path.join(CENSUS, "reloc.txt") if os.path.exists(os.path.join(CENSUS, "reloc.txt"))
+         else os.path.join(ROOT, "reloc.txt"))
 SYS_ENTRIES = ["SysZpSwap", "SysZpClear", "SysLoadCommon", "SysLoadScene", "SysWaitLine200",
                "SysReadStick", "SysBlitBank", "SysBlitDone", "SysSetVBV", "SysOsStub", "SysCommonTail", "SysSound", "SysSetDlist",
                "SysRowBase", "SysDliExit", "SysStClr", "SysRowNext", "SysRowNextC", "SysRowNextE",
@@ -216,8 +224,8 @@ def assemble_chunk(res, name, lo, hi, keep):
 
 def link(scenes=L.SCENES, verbose=True):
     car = open(CAR, "rb").read()
-    ex = glob.glob(os.path.join(ROOT, "census", "*.ex"))
-    reloc = os.path.join(ROOT, "reloc.txt")
+    ex = glob.glob(os.path.join(CENSUS, "*.ex"))
+    reloc = RELOC
     models = {s: X.analyse(car, s, ex, reloc) for s in scenes}
     usage = zp_usage(models)
     zpmap = L.zero_page_map(usage)

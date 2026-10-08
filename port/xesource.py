@@ -38,8 +38,12 @@ import sys
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# the toolkit: A7800_TOOLKIT, else the repository's submodule, else a
+# checkout beside the repository
 TOOLKIT = os.environ.get("A7800_TOOLKIT",
-                         os.path.join(HERE, "..", "..", "a7800-toolkit", "tools"))
+                         (os.path.join(HERE, "..", "a7800-toolkit", "tools")
+                         if os.path.isdir(os.path.join(HERE, "..", "a7800-toolkit", "tools"))
+                         else os.path.join(HERE, "..", "..", "a7800-toolkit", "tools")))
 sys.path.insert(0, TOOLKIT)
 sys.path.append(os.path.join(HERE, "..", "tools"))         # a8dis.py lives there; after
                                                             # the toolkit, whose asm.py wins
@@ -191,7 +195,8 @@ def load_reloc(path, scene):
         sc, loc, kind, v, reg = parts[:5]
         t = int(parts[5], 16) if len(parts) > 5 else None
         if sc == "*" or int(sc) == scene:
-            out[int(loc, 16)] = (kind, int(v, 16), reg, t)
+            # (value "--": the cartridge's byte there, filled in by analyse)
+            out[int(loc, 16)] = (kind, None if v == "--" else int(v, 16), reg, t)
     return out
 
 
@@ -218,6 +223,9 @@ def analyse(car, scene, ex_paths, reloc_path=None):
             mem[start + i] = v
     m.mem = mem
     at = mem.get
+    for loc, (kind, v, reg, t) in list(m.reloc.items()):
+        if v is None:
+            m.reloc[loc] = (kind, mem[loc], reg, t)
 
     shared = {"common", "art", "fixed"}
     ex_scene = executed(ex_paths, scene)

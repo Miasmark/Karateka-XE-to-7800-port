@@ -144,7 +144,14 @@ def row_dl(base, r):
 def xe_display_lists():
     """{scene: set of XEGS display list addresses the game selected}."""
     used = {}
-    for p in glob.glob(os.path.join(K.ROOT, "census", "*.col")):
+    lists = os.path.join(K.CENSUS, "xe-display-lists.txt")
+    if os.path.exists(lists):     # (port/mkcensus.py's digest of the .col files)
+        for line in open(lists):
+            if line.strip() and not line.startswith("#"):
+                s, a = line.split()
+                used.setdefault(int(s), set()).add(int(a, 16))
+        return used
+    for p in glob.glob(os.path.join(K.CENSUS, "*.col")):
         lo = None
         for line in open(p):
             parts = line.split()
@@ -760,12 +767,19 @@ def build(out_path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("-o", "--out", default=os.path.join(HERE, "..", "work", "karateka7800.a78"))
+    ap.add_argument("--car", help="the original XEGS cartridge (default: KARATEKA_CAR, else "
+                    "Karateka.car in the repository, else ../karateka/Karateka.car)")
     ap.add_argument("--snd-offset", type=int, default=None,
                     help="the TIA music's transposition in cents (default SND_OFFSET)")
     args = ap.parse_args()
     global SND_OFFSET
     if args.snd_offset is not None:
         SND_OFFSET = args.snd_offset
+    if args.car:
+        K.CAR = D.CAR = args.car
+    if not os.path.exists(K.CAR):
+        raise SystemExit("no original cartridge at %s: give it with --car (README)" % K.CAR)
+    os.makedirs(os.path.join(HERE, "..", "work"), exist_ok=True)
     try:
         build(args.out)
     except K.LinkError as e:

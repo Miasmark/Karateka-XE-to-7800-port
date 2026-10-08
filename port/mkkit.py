@@ -41,16 +41,24 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 ATARI = os.path.join(ROOT, "..")
-CAR = os.path.join(ATARI, "karateka", "Karateka.car")
+CAR = os.environ.get("KARATEKA_CAR",
+                     os.path.join(ROOT, "Karateka.car") if os.path.exists(os.path.join(ROOT, "Karateka.car"))
+                     else os.path.join(ATARI, "karateka", "Karateka.car"))
 A78 = os.path.join(ROOT, "work", "karateka7800.a78")
 SITES = os.path.join(ROOT, "work", "karateka7800.sites.json")
 OUT = os.path.join(ROOT, "dist", "karateka7800-kit")
 ABP_REPO = os.environ.get("ABP_REPO", os.path.join(ATARI, "Anchored-Bundle-of-Patches"))
-TOOLKIT = os.environ.get("A7800_TOOLKIT", os.path.join(ATARI, "a7800-toolkit", "tools"))
+TOOLKIT = os.environ.get("A7800_TOOLKIT",
+                         os.path.join(ROOT, "a7800-toolkit", "tools")
+                         if os.path.isdir(os.path.join(ROOT, "a7800-toolkit", "tools"))
+                         else os.path.join(ATARI, "a7800-toolkit", "tools"))
 sys.path.insert(0, ABP_REPO)
 sys.path.insert(0, TOOLKIT)
 
-import abp          # noqa: E402
+try:
+    import abp      # noqa: E402  (making the kit only: kitopt.py needs just OPTIONS)
+except ImportError:
+    abp = None
 import bps          # noqa: E402
 import sign7800     # noqa: E402
 
@@ -404,6 +412,8 @@ def build_options(port, sites):
 
 # ------------------------------------------------------------------- main
 def main():
+    if abp is None:
+        raise SystemExit("mkkit: needs Anchored-Bundle-of-Patches (ABP_REPO, else beside the repository)")
     car_raw = io.open(CAR, "rb").read()
     car = car_raw[16:]
     a78 = io.open(A78, "rb").read()

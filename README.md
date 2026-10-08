@@ -83,6 +83,9 @@ cartridge bytes:
 The port has been tested in MAME and on the 7800 core for the Analogue
 Pocket.
 
-*Karateka* was created by Jordan Mechner and published by Broderbund; the XE
-cartridge was published by Atari. This project is an unofficial fan port and
-is not affiliated with any of them.
+## Licence
+
+The port's own code, tools and notes are under the MIT licence (`LICENSE`).
+It does not cover the game: *Karateka* was created by Jordan Mechner and
+published by Broderbund; the XE cartridge was published by Atari. This
+project is an unofficial fan port and is not affiliated with any of them.

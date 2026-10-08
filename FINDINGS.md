@@ -3290,3 +3290,50 @@ waits for the vertical blank 3,175 of its 27,523 cycles a frame
 cycles at 24,110 a frame, the flip routine's wait taken out), also the 7th.
 So the port's scene 4 is the original's speed, and a picture 10% lighter
 would not change it on either machine.
+
+## On GitHub: built from a clone and your own cartridge (2026-10-08)
+The stable port is public at
+https://github.com/Miasmark/Karateka-XE-to-7800-port (branch `master`).
+The user's goal: the `.car` goes in, the finished `.a78` comes out, and no
+cartridge data is in the repository.
+
+**What the build reached outside the repository**, found by building in a
+fresh clone with only the `.car`:
+- `../karateka/Karateka.car`: now `--car`, else `KARATEKA_CAR`, else
+  `Karateka.car` in the top folder (ignored by git), else the old place.
+- `../a7800-toolkit/tools`: now the submodule `a7800-toolkit`, pinned at
+  `73fc834`, which is on the public toolkit's `main`. A checkout beside
+  the repository is still taken when there's no submodule.
+- `work/analysis/census/*.ex`, `*.col` and `work/analysis/reloc.txt`: now
+  in `census/`, made by `port/mkcensus.py`.
+  - The `.ex` files are copied as they are: executed addresses and counts.
+  - From the `.col` files (38 MB) the build only takes the display lists
+    each scene selected (`$D402/$D403`), so those are digested into
+    `xe-display-lists.txt` (20 lists).
+  - `reloc.txt`'s byte column was cartridge bytes (each relocated
+    pointer's high byte). It is written as `--` and read from the
+    cartridge in `xesource.analyse`. All 2,174 entries across the scenes
+    equal the cartridge's byte at their location, checked before the
+    change.
+- **`../a7800-toolkit-local/tools/tracker.py`, uncommitted:** the clone's
+  first cartridge differed (`SND_NB` `$58`, not `$53`; 516 bytes).
+  `sndconv.py` took its TIA pitches from the local toolkit's `tracker.py`,
+  whose 2026-09-25 correction of the measured waveform periods ("TIA
+  sound": AUDC C and 6 were an octave low) is neither committed there nor
+  in the public toolkit. In the clone it found the public, uncorrected
+  model instead. `sndconv.py` now carries the three tone modes' periods (4:
+  2, C: 6, 6: 31 divider ticks) and the NTSC clock itself; its pitches equal
+  the corrected model's for all 96 settings. The correction should still go
+  to the public toolkit (by PR, when asked).
+
+**Also:**
+- `mkkit.py` imports `abp` only when making the kit, so `kitopt.py`
+  (options) works in a clone. `kitopt.py --cart` takes a cartridge built
+  anywhere.
+- `README.md`: building, the options, the census data.
+
+**Checked:** no tracked file, in any version in the history, holds a run of
+12 or more hex bytes or binary data. A clone from GitHub builds the stable
+cartridge byte for byte: SHA-1 `a140d13f7f76e86225b0c3de2c8b3b528aef0d65`
+from `Karateka.car` SHA-1 `cddf050abc67aa2708763d781cdb247fb3bff50a`. The
+start-level3 invincible option cartridge matches too.

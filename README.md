@@ -71,6 +71,16 @@ cartridge bytes:
 `port/mkcensus.py` regenerates this folder from the full census recordings
 (`work/analysis`, made by the probes in `probes/`).
 
+## Speed
+
+In MAME, with accurate timing on both machines, the port draws the game
+28-42% faster than the original XE cartridge. That is the same scripted
+play, picture for picture, in levels 1-3. Stock MAME runs the XE 25-38% too
+fast, which had made the port look slightly slower than the original in
+level 1. The
+measurements and method are in `FINDINGS.md`, under "Speed against the
+original".
+
 ## The rest
 
 - `port/sys7800.asm`: the 7800 system code (display lists, DLIs, sound,

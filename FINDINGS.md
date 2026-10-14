@@ -1446,6 +1446,11 @@ four fixes and two changes to the comparison method.
   MAME's fast `xegs` and about 30 on the port, so the same script made
   different moves. **This is the long-press kick.** It is real time, so the
   port keeps it faithfully.
+  - **Correction (2026-10-13):** both figures are out of date. Stock MAME
+    gives the XE's CPU far more cycles than the hardware does, and the port
+    has been sped up since. Under accurate ANTIC timing the original takes
+    about 15 frames a flip in level 1 and the stable port about 12 (see
+    "Speed against the original").
 - **A flip counts when its instruction runs.** When an interrupt arrives
   just as MAME fetches the key opcode, MAME fetches it again after the RTI.
   The probe counted such a flip twice (the original's "missing" buffer
@@ -3337,3 +3342,99 @@ fresh clone with only the `.car`:
 cartridge byte for byte: SHA-1 `a140d13f7f76e86225b0c3de2c8b3b528aef0d65`
 from `Karateka.car` SHA-1 `cddf050abc67aa2708763d781cdb247fb3bff50a`. The
 start-level3 invincible option cartridge matches too.
+
+## Speed against the original (2026-10-13)
+**The question:** how fast is the stable port against the original XE
+cartridge? Until now, the original has only been run on stock MAME, and
+stock MAME's XE is too fast.
+
+**Why stock MAME flatters the XE:** MAME 0.287's ANTIC adds up the cycles
+it steals on a line, then holds the CPU for that many *pixel* periods,
+which are an eighth of a CPU cycle each. So the CPU loses almost nothing to
+the display. The BankSet MAME patch (`bankset-full.patch` in
+`Miasmark/mame-a7800-bankset`, commit `c9b5782`) builds ANTIC's DMA a
+cycle at a time, as the Altirra Hardware Reference Manual documents it.
+Its measuring cartridges count the passes of a 15-cycle loop in a frame;
+the rebuilt MAME gives the same counts on the XEGS machine:
+
+| Measuring cartridge | Stock MAME 0.287 | Patched | Documented |
+|---|---|---|---|
+| DMA off (refresh only) | 1,973 | 1,832 | 1,832 |
+| Graphics 0 | 1,909 | 1,267 | 1,267 |
+| Mode E, 192 lines | 1,909 | 1,307 | 1,307 |
+
+Under a bitmap screen, stock MAME gives the XE's CPU about 46% more time
+than the hardware does.
+
+**The patched MAME:** the patch's 8-bit files (`antic.cpp`, `antic.h`,
+`a800_slot.cpp`, `a800_slot.h`) applied to MAME 0.287. The patch was made
+for a later MAME, where the slot files are in `bus/a800/cart/`; in 0.287
+they are one folder up. With that path changed, every hunk applies.
+Built with `SUBTARGET=xe8 SOURCES=src/mame/atari/atari400.cpp`.
+
+**The method:**
+- `probes/playkey.lua`: the scripted player, keyed on the game's own
+  flips. `INJECT=1` feeds the stick into the game's reads; `FIREFLAG=1`
+  sets the game's fire flag as a flip starts. Both machines get the same
+  input at the same point of the game, whatever their speed.
+- `SCENE=1`, `2`, `3`; flips logged with their frame at 200, 300, ...,
+  1,200 (`KEYN`). Run with `port/runxe.sh` (`MACHINE=xe`) and
+  `port/run7800.sh`, each on both MAMEs:
+  - the original on stock MAME and on the patched build;
+  - the stable cartridge (SHA-1 `a140d13f…`) on stock MAME and on the
+    BankSet build with the a7800 fork's MARIA timing.
+- **The same game on every run:** playkey dumps both framebuffers at each
+  logged flip. All four runs' dumps are identical at every one (33 points
+  across scenes 1-3), so the frame counts differ only by speed.
+- **Frames to seconds:** MAME's XEGS runs at 59.923 Hz and its 7800 at
+  59.958 Hz (`screen.frame_period`), 0.06% apart.
+
+**Results**, pictures (flips) a second; the frame counts are flip 200 to
+the last flip of the span:
+
+| Span | Original, stock MAME | Original, accurate ANTIC | Stable port | Port against the original |
+|---|---|---|---|---|
+| Level 1, flips 200-1,200 | 5.43 (11,041 frames) | 3.93 (15,238) | 5.04 (11,899) | **28% faster** |
+| Level 2's own play, flips 200-400 | 6.49 (1,847) | 4.88 (2,457) | 6.55 (1,831) | **34% faster** |
+| Level 3's own play, flips 200-400 | 10.12 (1,184) | 8.10 (1,480) | 11.48 (1,045) | **42% faster** |
+| From level 2, flips 200-1,200 | 5.61 (10,675) | 4.10 (14,600) | 5.32 (11,263) | 30% faster |
+| From level 3, flips 200-1,200 | 5.75 (10,421) | 4.23 (14,177) | 5.43 (11,052) | 28% faster |
+
+In levels 2 and 3 the scripted player dies between flips 400 and 500, and
+the game goes back to level 1, so the 200-1,200 rows are mostly level 1.
+
+**Stock MAME's error:** it shows the original 25-38% faster than accurate
+timing does. On stock MAME the port looked a little slower than the
+original in level 1 (5.04 against 5.43); in fact it is faster.
+
+**The two 7800 MAMEs agree:** stock MAME and the fork's MARIA timing are at
+most 4 frames apart over any span, so the port's column uses the latter.
+
+**Level 1 by 100 flips** (seconds; the original under accurate ANTIC):
+
+| Flips | Original, stock | Original, accurate | Port | Original ÷ port |
+|---|---|---|---|---|
+| 200-300 | 15.1 | 20.6 | 13.4 | 1.54 |
+| 300-400 | 15.9 | 21.9 | 15.7 | 1.40 |
+| 400-500 | 25.2 | 34.9 | 31.6 | 1.10 |
+| 500-600 | 15.8 | 21.7 | 14.3 | 1.52 |
+| 600-700 | 15.4 | 21.4 | 15.8 | 1.35 |
+| 700-800 | 25.0 | 34.6 | 32.3 | 1.07 |
+| 800-900 | 15.4 | 21.3 | 13.9 | 1.53 |
+| 900-1,000 | 13.8 | 18.9 | 13.8 | 1.37 |
+| 1,000-1,100 | 25.8 | 35.6 | 31.0 | 1.15 |
+| 1,100-1,200 | 16.9 | 23.3 | 16.6 | 1.41 |
+
+The port's lead is smallest in every third stretch (400-500, 700-800,
+1,000-1,100), where both machines are slowest. Elsewhere the original
+takes 1.35-1.54 times as long.
+
+**Where the lead comes from:** not measured here. The stable port does
+less work for the same picture: the health bars are drawn only when they
+change, the row multiply is fixed, and fills and column copies are faster
+("The fork's speed-ups, merged"). These runs don't separate that from what
+each machine's display costs its CPU.
+
+**What this doesn't cover:** the title, the story and the attract mode
+(not measured), and real hardware. These are MAME's figures, with
+documented timing on both sides.

@@ -3438,3 +3438,32 @@ each machine's display costs its CPU.
 **What this doesn't cover:** the title, the story and the attract mode
 (not measured), and real hardware. These are MAME's figures, with
 documented timing on both sides.
+
+## The sounds' table (2026-10-16)
+Found in karateka-enh (its FINDINGS "The music's records released"): the
+common code's sound start (`$0C66`) reads a sound's record through the
+table at `$0D03`, 14 entries, interleaved low and high, sounds 5 and 6
+none.
+- **The fault here:** the census relocated only the entries its runs
+  started. Sounds 4, 8, 9 and `$0C` kept XEGS high bytes (`$0D`), so on
+  the 7800 they would point at `$0Dxx` instead of the records at `$9Dxx`.
+- **Latent:** a scan of every scene's code finds the game starting only
+  sounds 0, 3, 7 and `$0D` by immediate, 1-3 from `$F1` (the hit sounds),
+  and `$0A`/`$0B` from `$0CE4`. 5 takes another path. Never 4, 8, 9 or
+  `$0C`. The user: fix it just in case.
+- **Fix:** `port/reloclist.py`'s `MANUAL_TABLES` gets the table, with null
+  entries skipped. `port/mkcensus.py` then updates `census/reloc.txt` by
+  exactly four lines (`$0D0C`, `$0D14`, `$0D16`, `$0D1C`). Before the
+  change, both the generator's output and the build were checked to
+  reproduce byte for byte.
+- **The cartridge:** 24 bytes change, the four high bytes `$0D` → `$9D` in
+  each of the six banks (`work/karateka7800.a78` 787921f6… →
+  81bad32971e5f84f0a03ba99a75c657c). The invincible-easy, invincible and
+  level3-invincible option carts were regenerated: before the fix they
+  were exactly the base cart with their options.
+- **Checked:** the user's recording 07 forced onto the fixed cart (from
+  karateka-enh's `port/replay.sh`, with a `TopFlip` alias at `$D6DE`).
+  All 2,309 flips land on the same frames as before the fix, and its
+  snapshots are identical.
+- Not touched: `work/karateka7800-cheat.a78` (an older option cart) and
+  `dist/`.

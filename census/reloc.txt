@@ -6,9 +6,13 @@
 * 0D06 byte -- common 0D28
 * 0D08 byte -- common 0D31
 * 0D0A byte -- common 0D3A
+* 0D0C byte -- common 0D43
 * 0D12 byte -- common 0D4C
+* 0D14 byte -- common 0D55
+* 0D16 byte -- common 0D5E
 * 0D18 byte -- common 0D67
 * 0D1A byte -- common 0D70
+* 0D1C byte -- common 0D79
 * 0D1E byte -- common 0D82
 * 0E91 imm -- common 0F80
 * 0E9D imm -- engine1 1080

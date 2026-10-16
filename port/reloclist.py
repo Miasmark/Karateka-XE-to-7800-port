@@ -97,6 +97,12 @@ MANUAL_TABLES = [
     # the 7800 are console RAM in the middle of DLL_B. The pointers below the
     # table are music_pointers' (FINDINGS "The silent Akuma fight")
     ("*", 0x25C0, 0x25C1, 29, "auto", 2),
+    # the common code's sounds' table ($0C66: sound number x 2 into $0D03,
+    # interleaved; 14 sounds, 5 and 6 none): the census relocated the ones
+    # its runs started, and sounds 4, 8, 9 and $0C kept XEGS pointers into
+    # $0Dxx. The game never starts those four (a scan of every scene), so
+    # this is a safeguard (FINDINGS "The sounds' table")
+    ("*", 0x0D03, 0x0D04, 14, "auto", 2),
 ]
 MUSIC = (0x1203, 0x3000)      # scene code and engine2: where tune data lives
 
@@ -217,6 +223,8 @@ def main():
         mem = mems[1 if scene == "*" else int(scene)]
         for i in range(n):
             v = mem.get(hi + i * step)
+            if v == 0 and mem.get(lo + i * step) == 0:
+                continue                       # (a null entry: no pointer)
             reg = region(v << 8) if tgt == "auto" else tgt
             if reg in ("art", "bank15", "os", "?"):
                 continue                       # does not move (or is not a pointer)

@@ -27,7 +27,7 @@ Expected files:
 | File | SHA-1 |
 |---|---|
 | `Karateka.car` (input, XE cartridge with its 16-byte CAR header) | `cddf050abc67aa2708763d781cdb247fb3bff50a` |
-| `karateka7800.a78` (output) | `a140d13f7f76e86225b0c3de2c8b3b528aef0d65` |
+| `karateka7800.a78` (output) | `980b0d11f499025ea67d2ead2a20ecadf8527be1` |
 
 The output is a 128 KB SuperGame cartridge with a signed ROM and an A78
 header. The build also writes its symbol file, zero-page map and patch sites
@@ -49,7 +49,13 @@ python port/kitopt.py invincible easy --cart karateka7800.a78 -o karateka7800-in
 
 (`--cart` is the cartridge the build wrote; without it, `work/karateka7800.a78`.)
 
-The options are `invincible`, `easy`, `start-level2` and `start-level3`.
+The options are `invincible`, `easy`, `start-level2`, `start-level3` and
+`two-buttons`.
+
+`two-buttons` is for the 7800's two-button joysticks: button 1 punches and
+button 2 kicks, one move per press. Without it, the game keeps the XE's
+one-button control: a short press punches when you let go, and holding the
+button for about a third of a second kicks.
 
 `port/mkkit.py` makes a distributable patch kit (a BPS patch from the XE
 cartridge, plus an options bundle). It also needs

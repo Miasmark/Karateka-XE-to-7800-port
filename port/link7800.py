@@ -41,7 +41,7 @@ SYS_ENTRIES = ["SysZpSwap", "SysZpClear", "SysLoadCommon", "SysLoadScene", "SysW
                "SysReadStick", "SysBlitBank", "SysBlitDone", "SysSetVBV", "SysOsStub", "SysCommonTail", "SysSound", "SysSetDlist",
                "SysRowBase", "SysDliExit", "SysStClr", "SysRowNext", "SysRowNextC", "SysRowNextE",
                "SysRowNextS", "SysClearBuf", "SysCopyBuf", "SysRowAddr", "SysRowWrap", "SysRowWrapE0",
-               "SysRowWrapE2"]
+               "SysRowWrapE2", "SysButtons"]
 SYS_TABLE = 0xE0DA            # a jump table, so the game can be linked before the system
                               # (just after bank 15, which ends at $E221)
 

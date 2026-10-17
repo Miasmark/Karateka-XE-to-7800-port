@@ -3467,3 +3467,61 @@ none.
   snapshots are identical.
 - Not touched: `work/karateka7800-cheat.a78` (an older option cart) and
   `dist/`.
+
+### Two buttons: punch and kick, a kit option (2026-10-16)
+The user asked for the 7800's two buttons, button 1 for punches and button
+2 for kicks, first in karateka-enh's V2 and then as an option here.
+
+**The game's control:** the XE has one button. The frame routine
+`$0FAC-$0FFA` (common code, every scene page) times each press in `$DB`:
+- let go under 20 frames: a punch (`$47` = `$FF`);
+- held 20 frames: a kick (`$46` = `$FF`), and another every 44 frames
+  while it stays down;
+- `$DC` is non-zero while the button is down. The title's start tests it.
+
+**The 7800's two buttons:**
+- Two-button mode is RIOT port B bit 2 made an output (`CTLSWB`) and
+  driven low (`SWCHB`).
+- Then `INPT1` bit 7 is button 1 and `INPT0` bit 7 is button 2 (set while
+  pressed), as MAME's a7800 wires them. `INPT4` no longer sees a two-button
+  stick.
+- The RIOT is only safe in vertical blank or with DMA off ("No RIOT
+  timer"), so the mode is set at the boot, with DMA off.
+
+**The option, `two-buttons`** (port/mkkit.py):
+- The boot always writes the mode: `LDY #$00 / STY CTLSWB` (`JoyMode`,
+  after `STA SWCHB` with A = 0). The option turns `$00` into `$04`
+  (site `joy-mode`).
+- The fire routine's first three bytes (`LDA $C4 / BNE`, site `fire`, in
+  all six scene banks) become `JMP SysButtons`. That is the system jump
+  table's new last entry, `$E128`. `mkkit` checks the address against the
+  build's (`sys-buttons`).
+- `Buttons` (the system block, dormant without the option):
+  - button 1's press punches, button 2's kicks, once a press, at once;
+  - with both pressed together, the punch;
+  - the game's own guards are kept: no punch while a kick waits, and the
+    other way round, and nothing while `$C4` is set;
+  - `$DC` is `$80` plus which buttons are down, `$DB` a scratch byte.
+  - **The fallback:** with neither of the two down, the XE's timing on
+    `INPT4`, for a one-button joystick. Whether a one-button stick's
+    button reads in two-button mode on hardware is not known, so the
+    option's note says the held-button kick may not work there.
+- **The default cartridge changes only at the boot** (8 bytes) and in the
+  jump table and system block. New SHA-1:
+  `980b0d11f499025ea67d2ead2a20ecadf8527be1`.
+
+**Checked (MAME, `a78.exe`):**
+- Option cart (`two-buttons invincible easy`): at the cliff, button 1
+  punches and button 2 kicks, each from the press; holding gives one move.
+  On the title, button 1 starts the game (button 2 not tried there).
+- Default cart: one button still punches on release (4 frames) and kicks
+  after 20 frames held.
+- `mkkit`: the kit rebuilds the cartridge byte for byte, and
+  `two-buttons` (19 bytes: the mode byte, 3 in each of the six pages) and
+  `two-buttons,invincible,easy` apply, re-sign and verify.
+- Not tested on hardware.
+
+**Old recordings:** the default cartridge's fire routine is unchanged, so
+one-button recordings should play as before there (not replayed). On a
+`two-buttons` cartridge, MAME's button 1 punches at once, so a recording's
+kicks (long presses) would become punches.

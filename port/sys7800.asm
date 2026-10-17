@@ -67,6 +67,8 @@ SysRowWrapE0:
     JMP RowWrapE0
 SysRowWrapE2:
     JMP RowWrapE2
+SysButtons:                 ; (the kit's two-buttons option jumps here)
+    JMP Buttons
 
 ; ------------------------------------------------------------------ boot
 Reset:
@@ -82,6 +84,10 @@ Reset:
     STA AUDV0
     STA AUDV1
     STA CTLSWA              ; the sticks are inputs
+    STA SWCHB               ; (port B's outputs low)
+JoyMode:
+    LDY #$00                ; the left stick: one button ($00), or two ($04,
+    STY CTLSWB              ; port B bit 2 an output: the two-buttons option)
 ; clear console RAM $1800-$27FF with absolute stores: zero page and the
 ; stack are mirrors inside it, so a pointer kept in zero page would be wiped
 ; by its own loop
@@ -1572,6 +1578,100 @@ Mode8Next:
     INY
     CPY #30
     BNE Mode8Byte
+    RTS
+
+; The fire button with the kit's two-buttons option (port/mkkit.py; the
+; game's frame routine $0FAC-$0FFA then jumps here; FINDINGS "Two buttons:
+; punch and kick"). The XEGS has one button: held under 20 frames it
+; punches on release ($47), held 20 frames it kicks ($46). A 7800 two-button
+; joystick punches on button 1's press (INPT1) and kicks on button 2's
+; (INPT0), each once a press. With neither down, the old way on INPT4 (a
+; one-button joystick, if its button reads there in this mode). $DC: bit 7 a
+; button down (the game's own test is non-zero), bits 0-1 which of the two;
+; $DB the old way's frames held. A only.
+Buttons:
+    LDA G_ZC4
+    BNE ButtonsX
+    LDA #$00
+    BIT INPT1               ; (two-button mode: bit 7 set while pressed)
+    BPL Buttons1
+    ORA #$01
+Buttons1:
+    BIT INPT0
+    BPL Buttons2
+    ORA #$02
+Buttons2:
+    CMP #$01
+    BCC ButtonsOne
+    STA G_ZDB               ; (the two buttons down now)
+    LDA G_ZDC
+    AND #$03
+    EOR #$03
+    AND G_ZDB               ; (the ones just pressed)
+    LSR A
+    BCC ButtonsK
+    LDA #$FF                ; button 1: a punch, unless a kick is waiting
+    CMP G_Z46
+    BEQ ButtonsSet
+    STA G_Z47
+    BNE ButtonsSet
+ButtonsK:
+    LSR A
+    BCC ButtonsSet
+    LDA #$FF                ; button 2: a kick, unless a punch is waiting
+    CMP G_Z47
+    BEQ ButtonsSet
+    STA G_Z46
+ButtonsSet:
+    LDA G_ZDB
+    ORA #$80
+    STA G_ZDC
+    LDA #$00
+    STA G_ZDB
+ButtonsX:
+    RTS
+ButtonsOne:
+    LDA G_ZDC
+    AND #$03
+    BEQ ButtonsOld
+    LDA #$00                ; the two buttons let go
+    STA G_ZDC
+    STA G_ZDB
+    RTS
+ButtonsOld:                 ; (the XEGS's: $0FB0-$0FFA)
+    LDA G_ZDC
+    BPL ButtonsUp
+    BIT INPT4               ; (bit 7 clear while pressed)
+    BPL ButtonsHeld
+    LDA #$00                ; let go: a punch if held under 20 frames
+    STA G_ZDC
+    LDA G_ZDB
+    CMP #$14
+    LDA #$00
+    STA G_ZDB
+    BCS ButtonsX
+    LDA #$FF
+    CMP G_Z46
+    BEQ ButtonsX
+    STA G_Z47
+    RTS
+ButtonsHeld:
+    INC G_ZDB
+    LDA G_ZDB
+    CMP #$14
+    BNE ButtonsX
+    LDA #$E8                ; held 20 frames: a kick (and another 44 on)
+    STA G_ZDB
+    LDA #$FF
+    CMP G_Z47
+    BEQ ButtonsX
+    STA G_Z46
+    RTS
+ButtonsUp:
+    BIT INPT4
+    BMI ButtonsX
+    LDA #$80
+    STA G_ZDC
     RTS
 
 ;;; SCENEPAGE -- assembled at $9420 and placed in every scene page (free

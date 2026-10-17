@@ -307,6 +307,7 @@ def leak_check(patch, car):
 # game instruction located by the build (port/build7800.py, PATCH_SITES), and
 # the expected bytes are checked, so a moved or changed site fails here
 # rather than producing a cartridge that edits the wrong code.
+SYS_BUTTONS = 0xE0DA + 3 * 26     # (link7800: SYS_TABLE, SysButtons the 27th entry)
 OPTIONS = [
     {"id": "invincible", "knob": "player",
      "title": "the player cannot lose: hits cost nothing, no instant deaths, "
@@ -334,6 +335,17 @@ OPTIONS = [
          # set, so it falls into the foe's death as a last hit would
          ("foe-damage", "c6 b7", "85 b7"),
      ]},
+    # the 7800's two-button joysticks (the user, 2026-10-16): the boot puts
+    # the left stick in two-button mode, and the game's fire routine ($0FAC,
+    # LDA $C4 / BNE) becomes a jump to the port's Buttons (SysButtons, the
+    # system jump table's last entry, SYS_BUTTONS). One-button joysticks keep
+    # the long-press kick where their button still reads (INPT4).
+    {"id": "two-buttons", "knob": "buttons",
+     "title": "a two-button joystick: button 1 punches, button 2 kicks",
+     "note": "each press is one move, at once; with a one-button joystick the "
+             "held-button kick may not work in this mode",
+     "edits": [("joy-mode", "00", "04"),
+               ("fire", "a5 c4 d0", "4c %02x %02x" % (SYS_BUTTONS & 0xFF, SYS_BUTTONS >> 8))]},
     # where a new game starts, for testing a later part of the game: the
     # title's game start writes the scene number ($D0 = 1); these write
     # another. Dying still returns to scene 1, as a failed scripted run does.
@@ -357,6 +369,9 @@ LANDINGS = {"player-damage": (8, 0x60), "instant-death": (2, 0x60)}
 
 
 def build_options(port, sites):
+    if sites.get("sys-buttons") != [[7, SYS_BUTTONS]]:
+        raise SystemExit("mkkit: SysButtons is at %s, the two-buttons option jumps to $%04X"
+                         % (sites.get("sys-buttons"), SYS_BUTTONS))
     sections, files, options = {}, {}, []
     touched = set()
     for opt in OPTIONS:
@@ -403,7 +418,7 @@ def build_options(port, sites):
                    "body_sha256": hashlib.sha256(port).hexdigest(),
                    "anchors": anchors, "headers": [0, 128], "base": "0x0"},
         "knobs": {"player": "what hurts the player", "foes": "how much a foe can take",
-                  "start": "where a new game starts"},
+                  "start": "where a new game starts", "buttons": "the joystick's buttons"},
         "sections": sections,
         "options": options,
     }
@@ -479,7 +494,8 @@ def main():
         print(log)
         raise SystemExit("mkkit: the kit does not rebuild the port")
     print("kit rebuilds work/karateka7800.a78 byte for byte")
-    for sel in ("invincible", "easy", "invincible,easy", "start-level3", "start-level2,invincible"):
+    for sel in ("invincible", "easy", "invincible,easy", "start-level3", "start-level2,invincible",
+                "two-buttons", "two-buttons,invincible,easy"):
         rc, log = run("--with", sel, "-o", tmp)
         if rc:
             print(log)

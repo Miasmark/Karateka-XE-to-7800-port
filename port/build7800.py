@@ -58,13 +58,15 @@ PATCH_SITES = [      # (name, XEGS label, offset from it, scenes)
     ("gate", 0x79C5, 0, (2,)),                       # LDA $A7 (is the gate low enough)
     ("cliff", 0x7914, 0, (1, 6)),                    # LDA $A2 (driven over the edge)
     ("game-start", 0x7806, 1, (0,)),                 # LDA #$01 / STA $D0: the first scene
+    ("fire", 0x0FAC, 0, (0, 1, 2, 3, 4, 6)),         # LDA $C4 / BNE: the fire button (every page's)
 ]
                            # MSTAT (about 10 lines; it needs about 2)
 PAL = 1                                  # the palette COLPF0-2 are mapped to
 HW = {"INPTCTRL": 0x01, "AUDC0": 0x15, "AUDC1": 0x16, "AUDF0": 0x17, "AUDF1": 0x18,
       "AUDV0": 0x19, "AUDV1": 0x1A, "BACKGRND": 0x20, "WSYNC": 0x24,
       "MSTAT": 0x28, "DPPH": 0x2C, "DPPL": 0x30, "CTRL": 0x3C, "SWCHA": 0x280,
-      "SWCHB": 0x282, "CTLSWA": 0x281, "BANKSEL": 0x8000}
+      "SWCHB": 0x282, "CTLSWA": 0x281, "CTLSWB": 0x283, "INPT0": 0x08, "INPT1": 0x09, "INPT4": 0x0C,
+      "BANKSEL": 0x8000}
 SP = {"SP_ENGINE7": 0x8000, "SP_NCARVE": 0x8007, "SP_CARVE": 0x8008,
       "SP_NDL": 0x8040, "DLT_LO": 0x8041, "DLT_HI": 0x8049, "DLT_BUF": 0x8051,
       "DLT_CTRL": 0x8059, "DLT_DLO": 0x8061, "DLT_DHI": 0x8069, "DLT_M8": 0x8071,
@@ -454,6 +456,7 @@ def build(out_path):
     eq.update(IMG)
     eq.update({
         "ZP_P1": zp[0x00], "ZP_P2": zp[0x02], "G_ZD0": zp[0xD0], "G_Z04": zp[0x04], "G_Z1C": zp[0x1C],
+        "G_ZC4": zp[0xC4], "G_ZDB": zp[0xDB], "G_ZDC": zp[0xDC], "G_Z46": zp[0x46], "G_Z47": zp[0x47],  # (Buttons)
         "G_ENTRY0": res0.new_addr(0x7760), "G_L1000": res1.new_addr(0x1000),
         "G_L101F": res1.new_addr(0x101F), "G_L258D": res1.new_addr(0x258D),
         "G_L2426": res1.new_addr(0x2426), "G_L0F17": res1.new_addr(0x0F17),
@@ -736,6 +739,8 @@ def build(out_path):
     for name, xe, delta, scenes in PATCH_SITES:
         sites[name] = [[L.SCENE_BANK[s] if xe < 0xA000 or xe >= 0xC000 else 7,
                         link["scenes"][s]["resolver"].new_addr(xe) + delta] for s in scenes]
+    sites["joy-mode"] = [[7, sym["JoyMode"] + 1]]     # the boot's LDY #$00: the left stick's mode
+    sites["sys-buttons"] = [[7, sym["SysButtons"]]]   # (where the fire routine jumps: checked by mkkit)
     with open(os.path.join(HERE, "..", "work", "karateka7800.sites.json"), "w") as f:
         json.dump(sites, f, indent=1)
     vec = bytes([sym["Nmi"] & 0xFF, sym["Nmi"] >> 8, sym["Reset"] & 0xFF, sym["Reset"] >> 8,
